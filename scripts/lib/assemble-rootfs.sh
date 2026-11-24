@@ -125,7 +125,8 @@ SCRIPT
     cp "${ALPENGLOW_MODULE}" "${ROOTFS_DIR}/lib/modules/"
   fi
 
-  if [ "${ZIG_INIT:-0}" = "1" ] && [ -f "${OUT_DIR}/alpenglow-init" ]; then
+  if [ "${ZIG_INIT:-0}" = "1" ]; then
+    [ -f "${OUT_DIR}/alpenglow-init" ] || { echo "ERROR: requested Zig init is missing" >&2; return 1; }
     cp "${OUT_DIR}/alpenglow-init" "${ROOTFS_DIR}/init"
     chmod 755 "${ROOTFS_DIR}/init"
   else
@@ -333,15 +334,17 @@ _assemble_lean_service_units() {
   [ -f "${ROOTFS_DIR}/usr/local/bin/alpenglow-kernelctl" ] && cp "${BACKEND_DIR}/dinit/alpenglow-kernel-policy" "${d}/"
   [ -f "${ROOTFS_DIR}/usr/local/bin/alpenglow-zramctl-zig" ] && cp "${BACKEND_DIR}/dinit/alpenglow-zram" "${d}/"
   # The console waits for the /state attempt so the first-login password can
-  # be kept there; state-mount never fails, so this cannot block the console.
-  printf 'waits-for = state-mount\n' >> "${d}/shell-ttyS0"
-  # Diskless boots are valid: no state partition means RAM-only, said aloud.
-  cat > "${d}/state-mount" << 'UNIT'
+  # be kept there. Release images require state; dev boots may stay RAM-only.
+  if [ "${ALPENGLOW_REQUIRE_STATE:-0}" != "1" ]; then
+    printf 'waits-for = state-mount\n' >> "${d}/shell-ttyS0"
+    # Diskless boots are valid: no state partition means RAM-only, said aloud.
+    cat > "${d}/state-mount" << 'UNIT'
 type = scripted
 command = /bin/toybox sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; /usr/local/bin/mount-state.sh || echo 'alpenglow: /state not mounted; changes last until reboot'"
 restart = no
 depends-on = mount-filesystems
 UNIT
+  fi
   resolv_flag=""
   if [ -x "${ROOTFS_DIR}/usr/sbin/dnsmasq" ]; then
     resolv_flag="-d"
@@ -397,12 +400,17 @@ _wire_boot_services() {
     ln -sf "/etc/dinit.d/${svc}" "${ROOTFS_DIR}/etc/dinit.d/boot.d/${svc}" 2>/dev/null || true
   done
   # waits-for: one failing service must not stop the console with it.
+  # Release images explicitly require their persistent state mount.
   {
     echo "type = scripted"
     echo "command = /bin/true"
     echo "restart = no"
     for svc in ${BOOT_SERVICES}; do
-      echo "waits-for = ${svc}"
+      if [ "${svc}" = state-mount ] && [ "${ALPENGLOW_REQUIRE_STATE:-0}" = "1" ]; then
+        echo "depends-on = ${svc}"
+      else
+        echo "waits-for = ${svc}"
+      fi
     done
   } > "${ROOTFS_DIR}/etc/dinit.d/boot"
 }
@@ -544,8 +552,16 @@ _assemble_native_validate_services() {
 
 _assemble_minimal_rootfs() {
   _assemble_qemu_mount_units
+  if [ "${ALPENGLOW_REQUIRE_STATE:-0}" = "1" ]; then
+    cp "${BACKEND_DIR}/dinit/state-mount" "${ROOTFS_DIR}/etc/dinit.d/state-mount"
+    printf '%s\n' 'depends-on = mount-filesystems' >> "${ROOTFS_DIR}/etc/dinit.d/state-mount"
+    printf '%s\n' 'depends-on = state-mount' >> "${ROOTFS_DIR}/etc/dinit.d/shell-ttyS0"
+    cp "${BACKEND_DIR}/scripts/mount-state.sh" "${BACKEND_DIR}/scripts/mount-state-paths.sh" "${ROOTFS_DIR}/usr/local/bin/"
+    mkdir -p "${ROOTFS_DIR}/home" "${ROOTFS_DIR}/var/lib/alpenglow" "${ROOTFS_DIR}/var/cache/alpenglow" "${ROOTFS_DIR}/var/log/alpenglow"
+  fi
   if [ "${FAST:-0}" = "1" ]; then
     BOOT_SERVICES="shell-ttyS0 mount-filesystems"
+    [ "${ALPENGLOW_REQUIRE_STATE:-0}" != "1" ] || BOOT_SERVICES="state-mount ${BOOT_SERVICES}"
     _wire_boot_services
     _assemble_boot_native_passwd
     _assemble_common_rootfs_tail

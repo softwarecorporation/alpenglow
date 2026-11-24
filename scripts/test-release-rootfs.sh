@@ -24,6 +24,7 @@ compose() (
   ROOTFS_DIR="${OUT_DIR}/rootfs"
   BACKEND_DIR="${REPO_ROOT}/system/backends/appliance"
   ALPENGLOW_MODULE="${OUT_DIR}/none.ko"
+  [ "${ZIG_INIT:-0}" != "1" ] || stub "${OUT_DIR}/alpenglow-init"
   mkdir -p "${ROOTFS_DIR}/bin" "${ROOTFS_DIR}/sbin" "${ROOTFS_DIR}/etc/alpenglow" "${ROOTFS_DIR}/dev"
   stub "${ROOTFS_DIR}/bin/toybox"
   stub "${ROOTFS_DIR}/bin/busybox"

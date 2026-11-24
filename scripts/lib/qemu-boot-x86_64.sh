@@ -3,6 +3,28 @@
 # Expects KERNEL_IMAGE, INITRAMFS, OUT_DIR, and boot-native env (EFI, GRAPHICAL, FAST, …).
 set -eu
 
+qemu_ovmf_code() {
+  for p in /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/local/share/qemu/edk2-x86_64-code.fd /opt/homebrew/share/qemu/edk2-x86_64-code.fd /opt/homebrew/Cellar/qemu/*/share/qemu/edk2-x86_64-code.fd; do
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+  done
+  return 1
+}
+
+qemu_ovmf_vars() {
+  for p in \
+    "${1%CODE.fd}VARS.fd" \
+    "${1%CODE_4M.fd}VARS_4M.fd" \
+    "${1%CODE.4m.fd}VARS.4m.fd" \
+    "$(dirname "$1")/edk2-x86_64-vars.fd" \
+    /opt/homebrew/share/qemu/edk2-x86_64-vars.fd \
+    /usr/share/OVMF/OVMF_VARS.fd \
+    /usr/share/OVMF/OVMF_VARS_4M.fd \
+    /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+  done
+  return 1
+}
+
 qemu_boot_x86_64() {
   require_cmd qemu-system-x86_64
   echo "→ Booting Alpenglow..."
@@ -59,22 +81,10 @@ qemu_boot_x86_64() {
 
   if [ "${EFI}" = "1" ]; then
   # UEFI boot via OVMF pflash (available, but measured slower than SeaBIOS)
-    OVMF_CODE=""
-    for p in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/local/share/qemu/edk2-x86_64-code.fd /opt/homebrew/share/qemu/edk2-x86_64-code.fd /opt/homebrew/Cellar/qemu/*/share/qemu/edk2-x86_64-code.fd; do
-      [ -f "$p" ] && { OVMF_CODE="$p"; break; }
-    done
+    OVMF_CODE="$(qemu_ovmf_code || true)"
     if [ -n "${OVMF_CODE}" ]; then
       OVMF_VARS="${OUT_DIR}/ovmf-vars.fd"
-      OVMF_VARS_TEMPLATE=""
-      for p in \
-        "${OVMF_CODE%CODE.fd}VARS.fd" \
-        "${OVMF_CODE%CODE.4m.fd}VARS.4m.fd" \
-        "$(dirname "${OVMF_CODE}")/edk2-x86_64-vars.fd" \
-        /opt/homebrew/share/qemu/edk2-x86_64-vars.fd \
-        /usr/share/OVMF/OVMF_VARS.fd \
-        /usr/share/edk2/x64/OVMF_VARS.4m.fd; do
-        [ -f "$p" ] && { OVMF_VARS_TEMPLATE="$p"; break; }
-      done
+      OVMF_VARS_TEMPLATE="$(qemu_ovmf_vars "${OVMF_CODE}" || true)"
       if [ -n "${OVMF_VARS_TEMPLATE}" ]; then
         cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS}"
       elif [ ! -f "${OVMF_VARS}" ]; then

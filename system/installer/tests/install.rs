@@ -24,7 +24,10 @@ fn confirmed_disk_identity_is_checked_before_writing() {
     let identity = inspect_install_disk(&alias).unwrap();
     let read_prefix = |disk: &PathBuf| {
         let mut bytes = [0; 15];
-        fs::File::open(disk).unwrap().read_exact(&mut bytes).unwrap();
+        fs::File::open(disk)
+            .unwrap()
+            .read_exact(&mut bytes)
+            .unwrap();
         bytes
     };
     let first_before = read_prefix(&first);
@@ -51,20 +54,55 @@ fn confirmed_disk_identity_is_checked_before_writing() {
 
     let tui_source = dir.path().join("tui-source.img");
     fs::write(&tui_source, b"tui image bytes").unwrap();
-    let status = alpenglow_installer::run_installer_with_draw(
+    let args = || {
         [
             OsString::from("--tui"),
             tui_source.clone().into_os_string(),
             first.clone().into_os_string(),
-        ],
-        |draw_source, draw_target| {
-            assert_eq!(draw_source, tui_source);
-            assert_eq!(draw_target, Some(first.as_path()));
-            Ok(())
-        },
-    );
+        ]
+    };
+    for answer in [
+        Ok(None),
+        Ok(Some("wrong".into())),
+        Err("UI unavailable".into()),
+    ] {
+        let before = read_prefix(&first);
+        let cancelled = answer == Ok(None);
+        let status = alpenglow_installer::run_installer_with_confirmation(args(), |_, disk| {
+            assert_eq!(disk.path, first);
+            assert_eq!(read_prefix(&first), before);
+            answer
+        });
+        assert_eq!(status, if cancelled { 0 } else { 1 });
+        assert_eq!(read_prefix(&first), before);
+    }
+
+    let status =
+        alpenglow_installer::run_installer_with_confirmation(args(), |confirmed_source, disk| {
+            assert_eq!(confirmed_source, tui_source);
+            assert_eq!(disk.path, first);
+            Ok(Some(
+                first.file_name().unwrap().to_string_lossy().into_owned(),
+            ))
+        });
     assert_eq!(status, 0);
     assert_eq!(&read_prefix(&first), b"tui image bytes");
+
+    let before = read_prefix(&second);
+    let status = alpenglow_installer::run_installer_with_confirmation(
+        [
+            OsString::from("--tui"),
+            tui_source.clone().into_os_string(),
+            alias.clone().into_os_string(),
+        ],
+        |_, _| {
+            fs::remove_file(&alias).unwrap();
+            symlink(&second, &alias).unwrap();
+            Ok(Some("chosen-disk".into()))
+        },
+    );
+    assert_eq!(status, 1);
+    assert_eq!(read_prefix(&second), before);
 }
 
 #[test]
@@ -77,21 +115,14 @@ fn tui_rejects_invalid_targets_without_writing() {
     fs::write(&regular_target, b"keep target").unwrap();
 
     for target in [&regular_target, &missing_target] {
-        let mut drawn = false;
-        let status = alpenglow_installer::run_installer_with_draw(
+        let status = alpenglow_installer::run_installer_with_confirmation(
             [
                 OsString::from("--tui"),
                 source.clone().into_os_string(),
                 target.clone().into_os_string(),
             ],
-            |draw_source, draw_target| {
-                drawn = true;
-                assert_eq!(draw_source, source);
-                assert_eq!(draw_target, Some(target.as_path()));
-                Ok(())
-            },
+            |_, _| panic!("invalid targets must be rejected before confirmation"),
         );
-        assert!(drawn);
         assert_eq!(status, 1);
     }
     assert_eq!(fs::read(&regular_target).unwrap(), b"keep target");
