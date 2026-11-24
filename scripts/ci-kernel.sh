@@ -55,7 +55,7 @@ case "${MODE}" in
   config)
     for profile in minimal desktop; do
       configure "${profile}"
-      want_y "${profile}" SWAP BLK_DEV BLK_DEV_SD VIRTIO_BLK ATA_PIIX SATA_AHCI BLK_DEV_NVME ZRAM BCACHEFS_FS
+      want_y "${profile}" SWAP BLK_DEV BLK_DEV_SD VIRTIO_BLK ATA_PIIX SATA_AHCI BLK_DEV_NVME ZRAM BCACHEFS_FS NETDEVICES VIRTIO_NET
       # readme "Security": no loadable modules, so there is nothing to sign.
       ! grep -q '^CONFIG_MODULES=y$' .config || fail "${profile}: CONFIG_MODULES must stay off"
     done
@@ -75,7 +75,7 @@ case "${MODE}" in
     ./scripts/config --disable OBJTOOL --disable STACK_VALIDATION --disable UNWINDER_ORC \
       --set-str INITRAMFS_SOURCE ""
     make ARCH=x86_64 CC="${CC}" olddefconfig >/dev/null
-    want_y potato SWAP BLK_DEV BLK_DEV_SD ZRAM BCACHEFS_FS
+    want_y potato SWAP BLK_DEV BLK_DEV_SD ZRAM BCACHEFS_FS NETDEVICES VIRTIO_NET
     KBUILD_BUILD_TIMESTAMP=0 KBUILD_BUILD_USER=ci KBUILD_BUILD_HOST=ci \
       make -j"${JOBS}" ARCH=x86_64 CC="${CC}" bzImage >/dev/null
     printf 'ci-kernel: potato bzImage %s bytes\n' "$(stat -c%s arch/x86/boot/bzImage)"

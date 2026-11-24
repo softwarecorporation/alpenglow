@@ -216,14 +216,15 @@ def validate(image, work):
                 console = None
                 try:
                     console = Console(proc, serial)
+                    console.expect(rb"login:", "getty login prompt")
+                    console.send("root")
                     if boot == 0:
                         console.expect(rb"new password:", "first-login password provisioning")
                         console.send(password)
                         console.expect(rb"retype password:", "password confirmation")
                         console.send(password)
-                    console.expect(rb"login:", "login prompt", reject=rb"first login on this machine" if boot else None)
-                    console.send("root")
-                    console.expect(rb"password:", "password authentication")
+                    console.expect(rb"password:", "password authentication",
+                                   reject=rb"first login on this machine" if boot else None)
                     if boot == 1:
                         console.send(wrong_password)
                         console.expect(rb"login incorrect", "wrong-password rejection",
@@ -240,6 +241,8 @@ def validate(image, work):
                         "test \"$(/bin/busybox stat -c %a /state/etc/root-shadow)\" = 600 && "
                         "(grep '^root:' /etc/shadow | /bin/busybox cmp - /state/etc/root-shadow)",
                         name + " writable state and saved root password")
+                    print(name + ": PASS authenticated console, writable bcachefs and private saved password "
+                          + ("(initial boot)" if boot == 0 else "(after reboot)"), flush=True)
                     console.command(
                         "i=0; until /bin/busybox ifconfig eth0 | grep -q '192.0.2.20'; do "
                         "i=$((i+1)); [ \"$i\" -lt 30 ] || break; sleep 1; done; "
