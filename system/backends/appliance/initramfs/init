@@ -199,8 +199,10 @@ fi
 
 echo "Alpenglow: mounting ${ROOT_IMAGE}..."
 case "${ROOT_IMAGE}" in
-  *.erofs)     mount -t erofs -o ro,nodev "${ROOT_IMAGE}" /mnt/root ;;
-  *.squashfs)  mount -t squashfs -o ro,nodev "${ROOT_IMAGE}" /mnt/root ;;
+  *.erofs)     mount -t erofs -o ro,nodev "${ROOT_IMAGE}" /mnt/root ||
+    rescue_or_halt "Alpenglow: immutable root mount failed: ${ROOT_IMAGE}" ;;
+  *.squashfs)  mount -t squashfs -o ro,nodev "${ROOT_IMAGE}" /mnt/root ||
+    rescue_or_halt "Alpenglow: immutable root mount failed: ${ROOT_IMAGE}" ;;
   *) rescue_or_halt "Alpenglow: unsupported root image type: ${ROOT_IMAGE}" ;;
 esac
 
