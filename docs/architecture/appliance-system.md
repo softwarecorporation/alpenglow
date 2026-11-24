@@ -79,15 +79,16 @@ These changes are already reflected or scaffolded in the current appliance path:
 ## Updates And Rollback
 
 - Update policy lives in `/etc/alpenglow/update-policy.json`.
-- Writable update state lives in `/var/lib/alpenglow/system/update-state.json`.
-- The current strategy is `atomic-generations` with rollback enabled.
-- This mirrors the direction borrowed from Solaris boot environments and modern image-based Linux systems.
+- The policy declares `atomic-generations` and an update-state path at `/var/lib/alpenglow/system/update-state.json`; these are configuration contracts, not a working activation or rollback lifecycle.
+- The rootfs builder writes timestamped generation manifests, but they point at the same fixed root-image path. A later build replaces that payload; the manifests do not retain bootable previous generations.
+- Oil's `system sync` repairs package files immediately. Opt-in bcachefs snapshots of `/state` protect mutable state, not the immutable boot image, and do not provide automatic boot rollback.
+- Retained images, atomic activation, boot-good marking and automatic fallback remain unimplemented. Do not rely on them for recovery. The intended direction borrows from Solaris boot environments and image-based Linux systems.
 
 ## Package Management
 
 - Oil is the declared package manager for Alpenglow system packages.
 - Alpenglow should track Oil's `system-packages` direction rather than the simpler Homebrew-style user package workflow.
-- Oil is expected to manage generations, manifests, and system/userland package state under `/var/lib/alpenglow/oil`.
+- Oil manages package installation and inventory; boot-generation activation is a separate planned responsibility, not an implemented Oil feature.
 - The browser profile vault remains outside package-manager ownership.
 
 ## Why These Changes

@@ -3,7 +3,7 @@
 # Combines kernel image + initramfs for diskless boot.
 set -eu
 
-ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/system/backends/appliance"
 OUT_DIR="${ROOT_DIR}/build/appliance"
 INITRAMFS_DIR="${OUT_DIR}/initramfs"
