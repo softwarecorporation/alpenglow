@@ -1,0 +1,14 @@
+The decompressor runs before CPU feature checks. Do not inherit a build
+compiler's higher x86-64 ISA default for this bootstrap code.
+
+--- a/arch/x86/boot/compressed/Makefile
++++ b/arch/x86/boot/compressed/Makefile
+@@ -30,7 +30,7 @@
+ KBUILD_CFLAGS += -Wundef
+ KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
+ cflags-$(CONFIG_X86_32) := -march=i386
+-cflags-$(CONFIG_X86_64) := -mcmodel=small -mno-red-zone
++cflags-$(CONFIG_X86_64) := -march=x86-64 -mcmodel=small -mno-red-zone
+ KBUILD_CFLAGS += $(cflags-y)
+ KBUILD_CFLAGS += -mno-mmx -mno-sse
+ KBUILD_CFLAGS += -ffreestanding -fshort-wchar

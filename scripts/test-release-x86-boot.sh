@@ -9,6 +9,12 @@ fi
 echo 'NOTE: This boot gate does not verify the build host FAT assembly path.'
 echo 'NOTE: Experimental FUSE FAT assembly is not verified for release reproducibility.'
 
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+. "${root}/scripts/lib/qemu-boot-x86_64.sh"
+OVMF_CODE=$(qemu_ovmf_code) || { echo 'missing OVMF firmware' >&2; exit 1; }
+OVMF_VARS_TEMPLATE=$(qemu_ovmf_vars "$OVMF_CODE") || { echo 'missing OVMF variable store template' >&2; exit 1; }
+export OVMF_CODE OVMF_VARS_TEMPLATE
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 zstd -dc -- "$1" > "$tmp/disk.img"
@@ -17,15 +23,14 @@ python3 - "$tmp" <<'PY'
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
 import time
 
 tmp = sys.argv[1]
-firmware = '/usr/share/OVMF/OVMF_CODE.fd'
-if not os.path.isfile(firmware):
-    sys.exit('missing OVMF firmware: ' + firmware)
+firmware = os.environ['OVMF_CODE']
 
 def run_boot(name, args, serial, command, token, boot):
     log = bytearray()
@@ -122,7 +127,10 @@ for name in ('seabios', 'ovmf'):
         '-drive', 'file=' + overlay + ',format=qcow2,if=virtio',
     ]
     if name == 'ovmf':
-        args += ['-bios', firmware]
+        varstore = os.path.join(tmp, 'ovmf-vars.fd')
+        shutil.copyfile(os.environ['OVMF_VARS_TEMPLATE'], varstore)
+        args += ['-drive', 'if=pflash,format=raw,readonly=on,file=' + firmware,
+                 '-drive', 'if=pflash,format=raw,file=' + varstore]
     for boot, command in enumerate(commands):
         print('Booting ' + name + (' (initial)' if boot == 0 else ' (after reboot)'), flush=True)
         if os.path.exists(serial):
