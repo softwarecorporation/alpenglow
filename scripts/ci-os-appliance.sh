@@ -121,6 +121,7 @@ sh scripts/test-mount-state-paths.sh
 sh -n scripts/check-release-rootfs.sh
 sh scripts/test-build-release-failfast.sh
 sh scripts/test-release-rootfs.sh
+sh scripts/test-alpenglowed-build-readonly.sh
 
 # Generate appliance rootfs and validate it
 tmp_root="$(mktemp -d)"
