@@ -70,18 +70,8 @@ sha256_file() {
 
 require_cmd zstd
 
-# Oil ships in every edition but fast; build it like the installer so
-# boot-native.sh installs this binary instead of building its own.
-if [ "${FAST}" != "1" ]; then
-  if [ -n "${RUST_TARGET}" ]; then
-    cargo build --locked --release --target "${RUST_TARGET}" -p oil --manifest-path "${ROOT_DIR}/Cargo.toml" \
-      --target-dir "${ROOT_DIR}/target"
-  else
-    cargo build --locked --release -p oil --manifest-path "${ROOT_DIR}/Cargo.toml" --target-dir "${ROOT_DIR}/target"
-  fi
-  mkdir -p "${ROOT_DIR}/build/native"
-  cp "${INSTALLER_DIR}/oil" "${ROOT_DIR}/build/native/oil"
-fi
+# Oil ships in every edition but fast. The image builder builds its own musl
+# payload with wax enabled; the installer is built independently below.
 
 if [ "${ARCH}" = "aarch64" ] && [ "${BUILD_PROFILE}" = "desktop" ]; then
   cargo build --release --target "${RUST_TARGET}" --manifest-path "${ROOT_DIR}/system/installer/Cargo.toml" \

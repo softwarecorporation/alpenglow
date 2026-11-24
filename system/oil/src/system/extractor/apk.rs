@@ -100,8 +100,23 @@ fn extract_tracked_with_keys(
     let data_tar = verify_package(&data, &members, key_root)?;
 
     // Extract the data tar — this is what goes on disk
+    let destination = std::path::absolute(dest_dir)?;
+    let mut new_parents = Vec::new();
+    for directory in destination.ancestors() {
+        if directory.exists() {
+            if !new_parents.is_empty() {
+                new_parents.push(directory);
+            }
+            break;
+        }
+        new_parents.push(directory);
+    }
     std::fs::create_dir_all(dest_dir)?;
-    untar(data_tar, dest_dir)
+    let extracted = untar(data_tar, dest_dir)?;
+    for directory in new_parents {
+        std::fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(extracted)
 }
 
 /// One gzip member: its compressed byte range in the file and its contents.
@@ -423,6 +438,7 @@ fn process_file<R: std::io::Read>(
     files: &mut Vec<PathBuf>,
 ) -> Result<()> {
     entry.unpack(dest)?;
+    std::fs::File::open(dest)?.sync_all()?;
     files.push(dest.to_path_buf());
     Ok(())
 }
@@ -437,6 +453,14 @@ fn untar(tar_data: &[u8], dest_dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>
     for entry_result in archive.entries()? {
         let entry = entry_result?;
         process_tar_entry(entry, dest_dir, &mut files, &mut dirs, &mut created_dirs)?;
+    }
+
+    // Payloads and their directory entries must be durable before callers
+    // save an inventory that records the install or repair as complete.
+    let mut changed_dirs: Vec<_> = created_dirs.into_iter().collect();
+    changed_dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in changed_dirs {
+        std::fs::File::open(directory)?.sync_all()?;
     }
 
     Ok((files, dirs))

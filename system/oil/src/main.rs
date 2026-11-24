@@ -388,7 +388,6 @@ fn select_sync_package<'a>(
         .ok_or_else(|| error::OilError::FormulaNotFound(name.to_string()))?;
     let broken = state.broken_packages(root);
     let order = index.resolve_install_order(&[name.to_string()], |dependency| {
-        let dependency = index.find(dependency).map_or(dependency, |pkg| pkg.name.as_str());
         dependency != name
             && state.get(dependency).is_some()
             && !broken.iter().any(|broken| broken == dependency)
@@ -581,7 +580,10 @@ fn run_install(packages: Vec<String>, dry_run: bool) -> Result<()> {
 
     let registry_packages = load_registry()?;
     let index = PackageIndex::new(&registry_packages);
-    let order = index.resolve_install_order(&pending, |name| state.get(name).is_some())?;
+    let broken = state.broken_packages(&install::package_root()?);
+    let order = index.resolve_install_order(&pending, |name| {
+        state.get(name).is_some() && !broken.iter().any(|broken| broken == name)
+    })?;
 
     let dest = if !dry_run {
         util::snapshot::before_transaction("install");
@@ -1025,7 +1027,7 @@ mod tests {
     #[test]
     fn sync_refuses_missing_or_broken_dependencies_before_installing() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let packages = vec![
+        let mut packages = vec![
             system::registry::PackageMetadata {
                 name: "app".into(),
                 version: "2".into(),
@@ -1047,6 +1049,9 @@ mod tests {
                 provides: vec!["runtime-api".into()],
             },
         ];
+        let mut uninstalled_provider = packages[1].clone();
+        uninstalled_provider.name = "uninstalled-runtime".into();
+        packages.insert(1, uninstalled_provider);
         let index = PackageIndex::new(&packages);
         let mut state = install::InstallState::at(root.path())?;
         state.mark_installed("app", Some("1"));

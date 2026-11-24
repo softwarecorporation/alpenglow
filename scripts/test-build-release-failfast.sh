@@ -70,4 +70,20 @@ grep -q 'check-release-rootfs: potato image does not match editions.toml' "${tmp
 if run_release fast; then fail "incomplete fast rootfs produced a release"; fi
 [ "$(cat "${tmp}/require-state")" = 0 ] || fail "fast release must not require state"
 
+for selector in role sku legacy; do
+  (
+    unset ALPENGLOW_EDITION ALPENGLOW_SKU ALPENGLOW_ROLE FAST
+    case "${selector}" in
+      role) export ALPENGLOW_ROLE=fast ;;
+      sku) export ALPENGLOW_SKU=fast ;;
+      legacy) export FAST=1 ;;
+    esac
+    if PATH="${tmp}/bin:${PATH}" sh "${root}/scripts/build-release.sh" > "${tmp}/out" 2>&1; then
+      fail "incomplete ${selector} fast rootfs produced a release"
+    fi
+    [ "$(cat "${tmp}/require-state")" = 0 ] || fail "${selector} fast release must not require state"
+    grep -q 'check-release-rootfs: fast image' "${tmp}/out" || fail "${selector}: checker used a different edition"
+  )
+done
+
 printf 'test-build-release-failfast: ok\n'

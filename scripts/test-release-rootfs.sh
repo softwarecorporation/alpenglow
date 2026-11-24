@@ -78,6 +78,17 @@ done
 grep -qx 'depends-on = state-mount' "${tmp}/release-potato/rootfs/etc/dinit.d/boot" ||
   fail "potato release: persistent state must remain required"
 
+# The generated boot service does not import boot.d: a leftover link is inert.
+out="${tmp}/inactive-service"
+payloads "${out}"
+compose potato "${out}"
+sed '/^waits-for = dropbear$/d; /^depends-on = dropbear$/d' "${out}/rootfs/etc/dinit.d/boot" > "${tmp}/boot"
+mv "${tmp}/boot" "${out}/rootfs/etc/dinit.d/boot"
+mkdir -p "${out}/rootfs/etc/dinit.d/boot.d"
+ln -sf ../dropbear "${out}/rootfs/etc/dinit.d/boot.d/dropbear"
+if check potato "${out}" 2>"${tmp}/err"; then fail "unused boot.d link accepted"; fi
+grep -q 'dropbear is not started at boot' "${tmp}/err" || fail "unused boot.d link: wrong error"
+
 # Lean editions: the units the checker accepted actually run the services.
 lean="${tmp}/potato/rootfs/etc/dinit.d"
 grep -q 'dropbear -F -R -s' "${lean}/dropbear" || fail "potato: dropbear unit"

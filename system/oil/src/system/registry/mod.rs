@@ -78,7 +78,12 @@ impl<'a> PackageIndex<'a> {
         scheduled: &mut HashSet<&'a str>,
         order: &mut Vec<&'a PackageMetadata>,
     ) -> Result<()> {
-        if skip(name) {
+        if skip(name)
+            || self.packages.iter().any(|pkg| {
+                (pkg.name == name || pkg.provides.iter().any(|provided| provided == name))
+                    && skip(&pkg.name)
+            })
+        {
             return Ok(());
         }
 
@@ -513,6 +518,22 @@ mod tests {
         assert_eq!(
             order.iter().map(|pkg| pkg.name.as_str()).collect::<Vec<_>>(),
             vec!["runtime", "app"]
+        );
+
+        let mut second_provider = sample_pkg("installed-runtime", vec![]);
+        second_provider.provides = vec!["virtual-runtime".to_string()];
+        let mut pkgs = pkgs;
+        pkgs.push(second_provider);
+        let index = PackageIndex::new(&pkgs);
+        let order = index
+            .resolve_install_order(&["app".to_string()], |name| name == "installed-runtime")
+            .expect("any installed provider satisfies the virtual dependency");
+        assert_eq!(
+            order
+                .iter()
+                .map(|pkg| pkg.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["app"]
         );
     }
 

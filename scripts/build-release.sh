@@ -5,6 +5,11 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 . "${ROOT_DIR}/scripts/lib/initramfs-codec-identity.sh"
+# Resolve once so the builder, state requirement and checker use one edition.
+if [ -z "${ALPENGLOW_EDITION:-}${ALPENGLOW_SKU:-}${ALPENGLOW_ROLE:-}" ] && [ "${FAST:-0}" = 1 ]; then
+  ALPENGLOW_EDITION=fast
+fi
+. "${ROOT_DIR}/scripts/edition-resolve.sh"
 OUT_DIR="${ROOT_DIR}/build/release"
 IMAGE="${OUT_DIR}/alpenglow.img"
 KERNEL="${OUT_DIR}/vmlinuz"
@@ -48,7 +53,7 @@ else
 fi
 rm -f "${NATIVE_DIR}/vmlinuz" "${NATIVE_INITRAMFS}"
 require_state=1
-case "${ALPENGLOW_EDITION:-${ALPENGLOW_SKU:-potato}}" in fast) require_state=0 ;; esac
+[ "${FAST}" != 1 ] || require_state=0
 KERNEL_BUILD=1 BUILD_ONLY=1 ALPENGLOW_REQUIRE_STATE="${require_state}" INITRAMFS="${NATIVE_INITRAMFS}" "${ROOT_DIR}/scripts/boot-native.sh"
 sh "${ROOT_DIR}/scripts/check-release-rootfs.sh" "${NATIVE_DIR}/rootfs"
 test -f "${NATIVE_DIR}/vmlinuz" && test -f "${NATIVE_INITRAMFS}" || {

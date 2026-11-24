@@ -257,17 +257,17 @@ state_mounted() { grep -q ' /state ' /proc/mounts; }
 # retaining the current image's other accounts. BusyBox follows this symlink
 # when atomically replacing shadow, including passwd and chpasswd updates.
 if state_mounted && [ "$(/bin/busybox readlink /etc/shadow 2>/dev/null)" != "${saved}" ]; then
-  mkdir -p /state/etc && chmod 700 /state/etc || exit 1
-  old_umask=$(umask)
-  umask 077
-  if [ -s "${saved}" ]; then
-    { grep '^root:' "${saved}"; grep -v '^root:' /etc/shadow || true; } > "${saved}.new" || exit 1
-  else
-    cat /etc/shadow > "${saved}.new" || exit 1
-  fi
-  chmod 600 "${saved}.new" && mv "${saved}.new" "${saved}" &&
-    ln -sf "${saved}" /etc/shadow || exit 1
-  umask "${old_umask}"
+  (
+    umask 077
+    mkdir -p /state/etc && chmod 700 /state/etc || exit 1
+    if [ -s "${saved}" ]; then
+      { grep '^root:' "${saved}"; grep -v '^root:' /etc/shadow || true; } > "${saved}.new" || exit 1
+    else
+      cat /etc/shadow > "${saved}.new" || exit 1
+    fi
+    chmod 600 "${saved}.new" && mv "${saved}.new" "${saved}" &&
+      ln -sf "${saved}" /etc/shadow
+  ) || echo "Could not persist the root password to /state; changes may last only until reboot." >&2
 fi
 if grep -q '^root:!:' /etc/shadow; then
   echo "First login on this machine: choose a root password."

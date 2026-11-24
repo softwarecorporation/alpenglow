@@ -8,6 +8,8 @@ mkdir -p "${tmp}/scripts/lib" "${tmp}/build/native/rootfs/bin" "${tmp}/build/rel
 sed "s|/tmp/limine.conf|${tmp}/limine.conf|g" "${root}/scripts/build-release.sh" > "${tmp}/scripts/build-release.sh"
 cp "${root}/scripts/check-release-architecture.py" "${tmp}/scripts/"
 cp "${root}/scripts/lib/initramfs-codec-identity.sh" "${tmp}/scripts/lib/"
+cp "${root}/scripts/edition-resolve.sh" "${tmp}/scripts/"
+cp "${root}/editions.toml" "${tmp}/"
 # Rootfs edition validation has its own test; this fixture exercises later loop failures.
 printf '#!/bin/sh\nexit 0\n' > "${tmp}/scripts/check-release-rootfs.sh"
 python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x7fELF\x02\x01" + bytes(12) + b"\x3e\x00")' "${tmp}/build/native/rootfs/bin/true"

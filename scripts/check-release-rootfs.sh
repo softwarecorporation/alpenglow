@@ -18,8 +18,7 @@ problem() { problems="${problems}  - $1
 "; }
 world_has() { grep -qx "$1" "${WORLD}"; }
 boot_has() {
-  [ -e "${ROOTFS}/etc/dinit.d/boot.d/$1" ] || [ -L "${ROOTFS}/etc/dinit.d/boot.d/$1" ] ||
-    grep -Eq "^(depends-on|waits-for) = $1\$" "${ROOTFS}/etc/dinit.d/boot" 2>/dev/null
+  grep -Eq "^(depends-on|waits-for) = $1\$" "${ROOTFS}/etc/dinit.d/boot" 2>/dev/null
 }
 have_bin() { [ -x "${ROOTFS}/usr/sbin/$1" ] || [ -x "${ROOTFS}/usr/bin/$1" ]; }
 
