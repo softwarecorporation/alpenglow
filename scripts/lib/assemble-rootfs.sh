@@ -258,6 +258,7 @@ state_mounted() { grep -q ' /state ' /proc/mounts; }
 # when atomically replacing shadow, including passwd and chpasswd updates.
 if state_mounted && [ "$(/bin/busybox readlink /etc/shadow 2>/dev/null)" != "${saved}" ]; then
   mkdir -p /state/etc && chmod 700 /state/etc || exit 1
+  old_umask=$(umask)
   umask 077
   if [ -s "${saved}" ]; then
     { grep '^root:' "${saved}"; grep -v '^root:' /etc/shadow || true; } > "${saved}.new" || exit 1
@@ -266,6 +267,7 @@ if state_mounted && [ "$(/bin/busybox readlink /etc/shadow 2>/dev/null)" != "${s
   fi
   chmod 600 "${saved}.new" && mv "${saved}.new" "${saved}" &&
     ln -sf "${saved}" /etc/shadow || exit 1
+  umask "${old_umask}"
 fi
 if grep -q '^root:!:' /etc/shadow; then
   echo "First login on this machine: choose a root password."
