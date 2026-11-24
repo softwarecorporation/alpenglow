@@ -17,6 +17,9 @@ pub struct InstalledPackage {
     /// Files written by the last install, relative to the package root.
     #[serde(default)]
     pub files: Vec<String>,
+    /// An interrupted or failed repair must be retried even if all paths exist.
+    #[serde(default)]
+    pub repair_pending: bool,
 }
 
 /// The package root, honouring OIL_SYSTEM_PREFIX for staged roots.
@@ -28,17 +31,11 @@ fn state_path_in(root: &Path) -> PathBuf {
     root.join("var/lib/oil/installed.json")
 }
 
-/// Pre-/opt/oil location, read once so existing records are not lost.
-fn legacy_state_path() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|d| d.join(".oil").join("installed.json"))
-}
-
 pub struct InstallState {
     packages: HashMap<String, InstalledPackage>,
     /// Database file; always the one under the root it describes.
     path: PathBuf,
+    _lock: Option<std::fs::File>,
 }
 
 impl InstallState {
@@ -48,13 +45,7 @@ impl InstallState {
 
     /// The database for packages installed under `root`.
     pub fn at(root: &Path) -> Result<Self> {
-        let state = state_path_in(root);
-        let mut path = state.clone();
-        if !path.exists() {
-            if let Some(legacy) = legacy_state_path().filter(|p| p.exists()) {
-                path = legacy;
-            }
-        }
+        let path = state_path_in(root);
         let packages = if path.exists() {
             let raw = std::fs::read_to_string(&path)?;
             serde_json::from_str(&raw).map_err(|e| {
@@ -68,8 +59,25 @@ impl InstallState {
         };
         Ok(Self {
             packages,
-            path: state,
+            path,
+            _lock: None,
         })
+    }
+
+    /// Serialize writers before loading their snapshot, through extraction and save.
+    pub fn at_locked(root: &Path) -> Result<Self> {
+        let directory = root.join("var/lib/oil");
+        std::fs::create_dir_all(&directory)?;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("installed.lock"))?;
+        lock.lock()?;
+        let mut state = Self::at(root)?;
+        state._lock = Some(lock);
+        Ok(state)
     }
 
     pub fn load(&self) -> Result<HashMap<String, InstalledPackage>> {
@@ -77,10 +85,12 @@ impl InstallState {
     }
 
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&self.path, serde_json::to_string_pretty(&self.packages)?)?;
+        let parent = self.path.parent().expect("database path has a parent");
+        std::fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(file.as_file_mut(), &self.packages)?;
+        file.as_file().sync_all()?;
+        file.persist(&self.path).map_err(|e| e.error)?;
         Ok(())
     }
 
@@ -95,6 +105,7 @@ impl InstallState {
             pkg.version.clear();
             pkg.version.push_str(version_str);
             pkg.install_date = install_date;
+            pkg.repair_pending = false;
         } else {
             let pkg = InstalledPackage {
                 name: name.to_string(),
@@ -102,8 +113,15 @@ impl InstallState {
                 install_date,
                 pinned: false,
                 files: Vec::new(),
+                repair_pending: false,
             };
             self.packages.insert(name.to_string(), pkg);
+        }
+    }
+
+    pub fn mark_repair_pending(&mut self, name: &str) {
+        if let Some(pkg) = self.packages.get_mut(name) {
+            pkg.repair_pending = true;
         }
     }
 
@@ -125,9 +143,11 @@ impl InstallState {
             .packages
             .values()
             .filter(|pkg| {
-                pkg.files
-                    .iter()
-                    .any(|f| std::fs::symlink_metadata(root.join(f)).is_err())
+                pkg.repair_pending
+                    || pkg
+                        .files
+                        .iter()
+                        .any(|f| std::fs::symlink_metadata(root.join(f)).is_err())
             })
             .map(|pkg| pkg.name.clone())
             .collect();
@@ -215,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_home_state_is_still_read() -> Result<()> {
+    fn legacy_home_state_does_not_leak_into_staged_roots() -> Result<()> {
         let guard = EnvGuard::new();
         let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
         guard.isolate(temp_dir.path());
@@ -227,8 +247,42 @@ mod tests {
         )?;
 
         let state = InstallState::new()?;
-        assert_eq!(state.get("old").map(|p| p.version.as_str()), Some("1"));
-        assert!(state.get("old").unwrap().files.is_empty());
+        assert!(state.get("old").is_none());
+        state.save()?;
+        assert!(InstallState::at(&temp_dir.path().join("another-root"))?
+            .get("old")
+            .is_none());
+        assert!(std::fs::read_to_string(legacy.join("installed.json"))?.contains("old"));
+        Ok(())
+    }
+
+    #[test]
+    fn waiting_writer_loads_the_inventory_after_the_previous_writer_saves() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut first = InstallState::at_locked(root.path())?;
+        first.mark_installed("first", Some("1"));
+        let competing_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join("var/lib/oil/installed.lock"))?;
+        assert!(matches!(
+            competing_lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+
+        let next_root = root.path().to_path_buf();
+        let next = std::thread::spawn(move || -> Result<()> {
+            let mut second = InstallState::at_locked(&next_root)?;
+            assert_eq!(second.get("first").unwrap().version, "1");
+            second.mark_installed("second", Some("2"));
+            second.save()
+        });
+        first.save()?;
+        drop(first);
+        next.join().expect("second writer")?;
+        let saved = InstallState::at(root.path())?;
+        assert_eq!(saved.get("first").unwrap().version, "1");
+        assert_eq!(saved.get("second").unwrap().version, "2");
         Ok(())
     }
 

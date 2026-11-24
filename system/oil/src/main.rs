@@ -344,17 +344,15 @@ fn run_system_sync(prefix: Option<PathBuf>) -> Result<()> {
         }
         None => install::package_root()?,
     };
-    let mut state = install::InstallState::at(&root)?;
+    let mut state = install::InstallState::at_locked(&root)?;
     let mut registry: Option<Vec<system::registry::PackageMetadata>> = None;
-    let outcome = sync_package_root(&mut state, &root, |name| {
+    let outcome = sync_package_root(&mut state, &root, |name, state| {
         if registry.is_none() {
             registry = Some(load_registry()?);
         }
         let packages = registry.as_deref().unwrap_or_default();
         let index = PackageIndex::new(packages);
-        let pkg = index
-            .find(name)
-            .ok_or_else(|| error::OilError::FormulaNotFound(name.to_string()))?;
+        let pkg = select_sync_package(&index, name, state, &root)?;
         let files = install_package(pkg, &root)?;
         Ok((pkg.version.clone(), files))
     });
@@ -379,6 +377,29 @@ fn run_system_sync(prefix: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+fn select_sync_package<'a>(
+    index: &PackageIndex<'a>,
+    name: &str,
+    state: &install::InstallState,
+    root: &Path,
+) -> Result<&'a system::registry::PackageMetadata> {
+    let pkg = index
+        .find(name)
+        .ok_or_else(|| error::OilError::FormulaNotFound(name.to_string()))?;
+    let broken = state.broken_packages(root);
+    let order = index.resolve_install_order(&[name.to_string()], |dependency| {
+        dependency != name
+            && state.get(dependency).is_some()
+            && !broken.iter().any(|broken| broken == dependency)
+    })?;
+    if order.iter().any(|dependency| dependency.name != pkg.name) {
+        return Err(error::OilError::Install(format!(
+            "{name} needs missing dependencies; run oil install to install them before sync"
+        )));
+    }
+    Ok(pkg)
+}
+
 struct SyncOutcome {
     repaired: Vec<String>,
     failed: Vec<(String, error::OilError)>,
@@ -387,7 +408,7 @@ struct SyncOutcome {
 fn sync_package_root(
     state: &mut install::InstallState,
     root: &Path,
-    mut reinstall: impl FnMut(&str) -> Result<(String, Vec<PathBuf>)>,
+    mut reinstall: impl FnMut(&str, &install::InstallState) -> Result<(String, Vec<PathBuf>)>,
 ) -> SyncOutcome {
     let broken = state.broken_packages(root);
     if !broken.is_empty() {
@@ -400,7 +421,14 @@ fn sync_package_root(
         failed: Vec::new(),
     };
     for name in broken {
-        match reinstall(&name) {
+        // Persist intent before extraction: partial writes or a killed process
+        // must remain retryable even when every old path is still present.
+        state.mark_repair_pending(&name);
+        if let Err(error) = state.save() {
+            outcome.failed.push((name, error));
+            continue;
+        }
+        match reinstall(&name, state) {
             Ok((version, files)) => {
                 state.mark_installed(&name, Some(version.as_str()));
                 state.set_files(&name, root, &files);
@@ -519,7 +547,11 @@ fn run_info(formula: String) -> Result<()> {
 }
 
 fn run_install(packages: Vec<String>, dry_run: bool) -> Result<()> {
-    let mut state = install::InstallState::new()?;
+    let mut state = if dry_run {
+        install::InstallState::new()?
+    } else {
+        install::InstallState::at_locked(&install::package_root()?)?
+    };
     let mut pending = Vec::new();
 
     for name in packages {
@@ -577,9 +609,9 @@ fn run_install_recipe(recipe_path: PathBuf, dry_run: bool) -> Result<()> {
         return Ok(());
     }
     let dest = util::security::validate_install_dest(&recipe.install_dest())?;
+    let mut state = install::InstallState::at_locked(&install::package_root()?)?;
     util::snapshot::before_transaction("install");
     install_package(&pkg, &dest)?;
-    let mut state = install::InstallState::new()?;
     state.mark_installed(&pkg.name, Some(pkg.version.as_str()));
     state.save()?;
     println!(
@@ -592,7 +624,7 @@ fn run_install_recipe(recipe_path: PathBuf, dry_run: bool) -> Result<()> {
 }
 
 fn run_uninstall(formulae: Vec<String>, all: bool) -> Result<()> {
-    let mut state = install::InstallState::new()?;
+    let mut state = install::InstallState::at_locked(&install::package_root()?)?;
     util::snapshot::before_transaction("uninstall");
     if all {
         state.clear();
@@ -606,7 +638,7 @@ fn run_uninstall(formulae: Vec<String>, all: bool) -> Result<()> {
 }
 
 fn run_reinstall(packages: Vec<String>, all: bool) -> Result<()> {
-    let mut state = install::InstallState::new()?;
+    let mut state = install::InstallState::at_locked(&install::package_root()?)?;
     let names: Vec<String> = if all {
         state.load()?.into_keys().collect()
     } else {
@@ -671,7 +703,11 @@ fn plan_upgrades<'a>(
 }
 
 fn run_upgrade(packages: Vec<String>, dry_run: bool) -> Result<()> {
-    let mut state = install::InstallState::new()?;
+    let mut state = if dry_run {
+        install::InstallState::new()?
+    } else {
+        install::InstallState::at_locked(&install::package_root()?)?
+    };
     let installed = state.load()?;
     if installed.is_empty() {
         println!("No packages installed");
@@ -712,7 +748,9 @@ fn run_upgrade(packages: Vec<String>, dry_run: bool) -> Result<()> {
     if upgrades.is_empty() {
         println!("All packages are up to date");
     }
-    state.save()?;
+    if !dry_run {
+        state.save()?;
+    }
     Ok(())
 }
 
@@ -927,9 +965,11 @@ mod tests {
         }
 
         let mut calls = Vec::new();
-        let outcome = sync_package_root(&mut state, &root, |name| {
+        let outcome = sync_package_root(&mut state, &root, |name, _state| {
             calls.push(name.to_string());
             if name == "delisted" {
+                // Simulate an extraction that fills the missing path then fails.
+                std::fs::write(root.join("usr/bin/delisted"), "partial")?;
                 return Err(error::OilError::FormulaNotFound(name.to_string()));
             }
             let file = root.join("usr/bin").join(name);
@@ -949,14 +989,62 @@ mod tests {
         state.save()?;
         let reloaded = install::InstallState::at(&root)?;
         assert_eq!(reloaded.get("zlost").unwrap().version, "2");
+        assert_eq!(reloaded.broken_packages(&root), ["delisted"]);
         assert!(install::InstallState::new()?.get("zlost").is_none());
 
         // Only the unrepairable package is still broken.
-        let again = sync_package_root(&mut state, &root, |name| {
+        let again = sync_package_root(&mut state, &root, |name, _state| {
             Err(error::OilError::FormulaNotFound(name.to_string()))
         });
         assert!(again.repaired.is_empty());
         assert_eq!(again.failed.len(), 1);
+        let retried = sync_package_root(&mut state, &root, |name, _state| {
+            Ok(("3".into(), vec![root.join("usr/bin").join(name)]))
+        });
+        assert_eq!(retried.repaired, ["delisted"]);
+        assert!(state.broken_packages(&root).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_refuses_missing_or_broken_dependencies_before_installing() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let packages = vec![
+            system::registry::PackageMetadata {
+                name: "app".into(),
+                version: "2".into(),
+                description: String::new(),
+                download_url: "https://example.invalid/app.apk".into(),
+                sha256: None,
+                installed_size: 0,
+                depends: vec!["runtime".into()],
+                provides: vec![],
+            },
+            system::registry::PackageMetadata {
+                name: "runtime".into(),
+                version: "1".into(),
+                description: String::new(),
+                download_url: "https://example.invalid/runtime.apk".into(),
+                sha256: None,
+                installed_size: 0,
+                depends: vec![],
+                provides: vec![],
+            },
+        ];
+        let index = PackageIndex::new(&packages);
+        let mut state = install::InstallState::at(root.path())?;
+        state.mark_installed("app", Some("1"));
+        assert!(select_sync_package(&index, "app", &state, root.path()).is_err());
+        state.mark_installed("runtime", Some("1"));
+        let file = root.path().join("runtime");
+        state.set_files("runtime", root.path(), &[file.clone()]);
+        assert!(select_sync_package(&index, "app", &state, root.path()).is_err());
+        std::fs::write(file, "intact")?;
+        assert_eq!(
+            select_sync_package(&index, "app", &state, root.path())?.version,
+            "2"
+        );
+        assert_eq!(state.get("app").unwrap().version, "1");
         Ok(())
     }
 
