@@ -33,7 +33,7 @@ valid_key_path() {
 partname_dev() {
   for uevent in "${SYSFS_BLOCK:-/sys/class/block}"/*/uevent; do
     [ -r "${uevent}" ] || continue
-    if grep -qx "PARTNAME=$1" "${uevent}"; then
+    if grep -Fxq "PARTNAME=$1" "${uevent}"; then
       dev="$(sed -n 's/^DEVNAME=//p' "${uevent}")"
       [ -n "${dev}" ] && { echo "/dev/${dev}"; return 0; }
     fi
