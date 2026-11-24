@@ -118,6 +118,7 @@ assert_contains system/appliance/filesystems/state-mounts.json '"target": "/var/
 assert_contains system/appliance/filesystems/state-mounts.json '"format": "bcachefs"'
 sh scripts/test-mount-state-paths.sh
 sh scripts/test-alpenglowed-build-readonly.sh
+sh scripts/test-initramfs-root-mount.sh
 
 # Generate appliance rootfs and validate it
 tmp_root="$(mktemp -d)"
