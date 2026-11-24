@@ -388,6 +388,7 @@ fn select_sync_package<'a>(
         .ok_or_else(|| error::OilError::FormulaNotFound(name.to_string()))?;
     let broken = state.broken_packages(root);
     let order = index.resolve_install_order(&[name.to_string()], |dependency| {
+        let dependency = index.find(dependency).map_or(dependency, |pkg| pkg.name.as_str());
         dependency != name
             && state.get(dependency).is_some()
             && !broken.iter().any(|broken| broken == dependency)
@@ -1017,7 +1018,7 @@ mod tests {
                 download_url: "https://example.invalid/app.apk".into(),
                 sha256: None,
                 installed_size: 0,
-                depends: vec!["runtime".into()],
+                depends: vec!["runtime-api".into()],
                 provides: vec![],
             },
             system::registry::PackageMetadata {
@@ -1028,7 +1029,7 @@ mod tests {
                 sha256: None,
                 installed_size: 0,
                 depends: vec![],
-                provides: vec![],
+                provides: vec!["runtime-api".into()],
             },
         ];
         let index = PackageIndex::new(&packages);
