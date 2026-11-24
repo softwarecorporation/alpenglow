@@ -327,6 +327,7 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           EDITION: ${{ matrix.edition }}
+          ALPENGLOW_EDITION: ${{ matrix.edition }}
         run: sh scripts/test-release-x86-boot.sh "build/release/assets/alpenglow-${VERSION}-${EDITION}-x86_64.img.zst"
 
       - name: Boot aarch64 desktop ISO with UEFI

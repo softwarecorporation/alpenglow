@@ -67,6 +67,17 @@ for edition in potato internet desktop fast; do
   check "${edition}" "${out}" >/dev/null || fail "${edition}: release rootfs rejected"
 done
 
+for edition in potato internet desktop fast; do
+  out="${tmp}/release-${edition}"
+  payloads "${out}"
+  require_state=1
+  [ "${edition}" != fast ] || require_state=0
+  ALPENGLOW_REQUIRE_STATE="${require_state}" compose "${edition}" "${out}"
+  check "${edition}" "${out}" >/dev/null || fail "${edition}: state-aware release rootfs rejected"
+done
+grep -qx 'depends-on = state-mount' "${tmp}/release-potato/rootfs/etc/dinit.d/boot" ||
+  fail "potato release: persistent state must remain required"
+
 # Lean editions: the units the checker accepted actually run the services.
 lean="${tmp}/potato/rootfs/etc/dinit.d"
 grep -q 'dropbear -F -R -s' "${lean}/dropbear" || fail "potato: dropbear unit"
@@ -88,8 +99,12 @@ for edition in potato fast desktop; do
 done
 # configure-rootfs.sh service users survive the serial-login passwd step.
 grep -q '^dnsmasq:' "${tmp}/desktop/rootfs/etc/passwd" || fail "desktop: service users dropped"
+grep -q -- '-f /etc/chrony/chrony.conf' "${tmp}/desktop/rootfs/etc/dinit.d/chronyd" ||
+  fail "desktop: chronyd must use the configured path"
 # The console waits for /state so the first password can be kept there.
 grep -qx 'waits-for = state-mount' "${lean}/shell-ttyS0" || fail "potato: console must wait for state-mount"
+grep -qx 'waits-for = state-mount' "${tmp}/desktop/rootfs/etc/dinit.d/shell-ttyS0" ||
+  fail "desktop: console must wait for optional state-mount"
 # A missing validation input is not an empty package list.
 for world in missing-world unreadable-world directory-world; do
   fixture="${tmp}/world-input/system/backends/appliance"

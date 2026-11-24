@@ -47,7 +47,9 @@ else
   NATIVE_INITRAMFS="${NATIVE_DIR}/initramfs.cpio.zst"
 fi
 rm -f "${NATIVE_DIR}/vmlinuz" "${NATIVE_INITRAMFS}"
-KERNEL_BUILD=1 BUILD_ONLY=1 ALPENGLOW_REQUIRE_STATE=1 INITRAMFS="${NATIVE_INITRAMFS}" "${ROOT_DIR}/scripts/boot-native.sh"
+require_state=1
+case "${ALPENGLOW_EDITION:-${ALPENGLOW_SKU:-potato}}" in fast) require_state=0 ;; esac
+KERNEL_BUILD=1 BUILD_ONLY=1 ALPENGLOW_REQUIRE_STATE="${require_state}" INITRAMFS="${NATIVE_INITRAMFS}" "${ROOT_DIR}/scripts/boot-native.sh"
 sh "${ROOT_DIR}/scripts/check-release-rootfs.sh" "${NATIVE_DIR}/rootfs"
 test -f "${NATIVE_DIR}/vmlinuz" && test -f "${NATIVE_INITRAMFS}" || {
   echo "boot build did not produce the requested kernel and initramfs" >&2

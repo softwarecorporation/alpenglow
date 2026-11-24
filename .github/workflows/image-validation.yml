@@ -115,7 +115,6 @@ jobs:
           cp build/native/linux/arch/x86/boot/compressed/.ident_map_64.o.cmd evidence/bootstrap-ident-map.cmd
           objdump -d --disassemble=kernel_ident_mapping_init evidence/bootstrap-vmlinux > evidence/bootstrap-ident-map.disassembly
       - name: Boot the generated disk with both firmwares and verify persistence
-        if: github.event.pull_request.number == 628
         run: |
           set -euo pipefail
           sh scripts/test-release-x86-boot.sh build/release/alpenglow.img.zst 2>&1 | tee evidence/disk-boot.log

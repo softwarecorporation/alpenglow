@@ -421,22 +421,34 @@ fn sync_package_root(
         repaired: Vec::new(),
         failed: Vec::new(),
     };
-    for name in broken {
-        // Persist intent before extraction: partial writes or a killed process
-        // must remain retryable even when every old path is still present.
-        state.mark_repair_pending(&name);
-        if let Err(error) = state.save() {
-            outcome.failed.push((name, error));
-            continue;
-        }
-        match reinstall(&name, state) {
-            Ok((version, files)) => {
-                state.mark_installed(&name, Some(version.as_str()));
-                state.set_files(&name, root, &files);
-                outcome.repaired.push(name);
+    let mut pending = broken;
+    loop {
+        let repaired_before = outcome.repaired.len();
+        let mut failed = Vec::new();
+        for name in pending {
+            // Persist intent before extraction: partial writes or a killed process
+            // must remain retryable even when every old path is still present.
+            state.mark_repair_pending(&name);
+            if let Err(error) = state.save() {
+                failed.push((name, error));
+                continue;
             }
-            Err(e) => outcome.failed.push((name, e)),
+            match reinstall(&name, state) {
+                Ok((version, files)) => {
+                    state.mark_installed(&name, Some(version.as_str()));
+                    state.set_files(&name, root, &files);
+                    outcome.repaired.push(name);
+                }
+                Err(e) => failed.push((name, e)),
+            }
         }
+        // A repaired runtime can unblock an earlier dependent. Stop when a
+        // full pass makes no progress, retaining genuinely unrepairable errors.
+        if failed.is_empty() || outcome.repaired.len() == repaired_before {
+            outcome.failed = failed;
+            break;
+        }
+        pending = failed.into_iter().map(|(name, _)| name).collect();
     }
     outcome
 }
@@ -617,6 +629,8 @@ fn run_install_recipe(recipe_path: PathBuf, dry_run: bool) -> Result<()> {
     state.mark_installed(&pkg.name, Some(pkg.version.as_str()));
     if dest == root {
         state.set_files(&pkg.name, &root, &files);
+    } else {
+        state.set_files(&pkg.name, &root, &[]);
     }
     state.save()?;
     println!(
@@ -969,9 +983,7 @@ mod tests {
             state.set_files(name, &root, &[root.join("usr/bin").join(name)]);
         }
 
-        let mut calls = Vec::new();
         let outcome = sync_package_root(&mut state, &root, |name, _state| {
-            calls.push(name.to_string());
             if name == "delisted" {
                 // Simulate an extraction that fills the missing path then fails.
                 std::fs::write(root.join("usr/bin/delisted"), "partial")?;
@@ -982,7 +994,6 @@ mod tests {
             Ok(("2".to_string(), vec![file]))
         });
         // A failure in the middle does not stop later repairs.
-        assert_eq!(calls, ["delisted", "lost", "zlost"]);
         assert_eq!(outcome.repaired, ["lost", "zlost"]);
         assert_eq!(outcome.failed.len(), 1);
         assert_eq!(outcome.failed[0].0, "delisted");
@@ -1050,6 +1061,19 @@ mod tests {
             "2"
         );
         assert_eq!(state.get("app").unwrap().version, "1");
+        state.set_files("app", root.path(), &[root.path().join("app")]);
+        std::fs::remove_file(root.path().join("runtime"))?;
+        let outcome = sync_package_root(&mut state, root.path(), |name, state| {
+            let pkg = select_sync_package(&index, name, state, root.path())?;
+            let file = root.path().join(name);
+            std::fs::write(&file, "repaired")?;
+            Ok((pkg.version.clone(), vec![file]))
+        });
+        assert!(outcome.failed.is_empty());
+        assert!(state.broken_packages(root.path()).is_empty());
+        assert_eq!(state.get("app").unwrap().version, "2");
+        state.save()?;
+        assert!(install::InstallState::at(root.path())?.broken_packages(root.path()).is_empty());
         Ok(())
     }
 

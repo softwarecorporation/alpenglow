@@ -248,15 +248,24 @@ _assemble_login() {
   mkdir -p "${ROOTFS_DIR}/usr/local/bin"
   cat > "${ROOTFS_DIR}/usr/local/bin/alpenglow-login" << 'LOGIN'
 #!/bin/toybox sh
-# Root ships locked. The first console login sets its password and keeps
-# the hash on /state, so it survives reboots on editions that mount /state.
+# Root ships locked. The first console login sets its password; with /state
+# mounted, shadow points at persistent storage for subsequent password changes.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 saved=/state/etc/root-shadow
 state_mounted() { grep -q ' /state ' /proc/mounts; }
-# A fresh boot has the image's locked root: bring back the saved hash.
-if grep -q '^root:!:' /etc/shadow && [ -s "${saved}" ]; then
-  { cat "${saved}"; grep -v '^root:' /etc/shadow; } > /etc/shadow.new &&
-    chmod 600 /etc/shadow.new && mv /etc/shadow.new /etc/shadow
+# A fresh boot has the image's locked root: keep the saved root entry while
+# retaining the current image's other accounts. BusyBox follows this symlink
+# when atomically replacing shadow, including passwd and chpasswd updates.
+if state_mounted && [ "$(/bin/busybox readlink /etc/shadow 2>/dev/null)" != "${saved}" ]; then
+  mkdir -p /state/etc && chmod 700 /state/etc || exit 1
+  umask 077
+  if [ -s "${saved}" ]; then
+    { grep '^root:' "${saved}"; grep -v '^root:' /etc/shadow || true; } > "${saved}.new" || exit 1
+  else
+    cat /etc/shadow > "${saved}.new" || exit 1
+  fi
+  chmod 600 "${saved}.new" && mv "${saved}.new" "${saved}" &&
+    ln -sf "${saved}" /etc/shadow || exit 1
 fi
 if grep -q '^root:!:' /etc/shadow; then
   echo "First login on this machine: choose a root password."
@@ -268,12 +277,6 @@ if grep -q '^root:!:' /etc/shadow; then
     sleep 1
   done
   state_mounted || echo "No /state mounted: this password lasts until reboot."
-fi
-# Keep /state in step with the live hash, including later passwd changes.
-if state_mounted && ! grep -q '^root:!:' /etc/shadow &&
-  ! grep -qxF "$(cat "${saved}" 2>/dev/null)" /etc/shadow; then
-  mkdir -p /state/etc && chmod 700 /state/etc
-  grep '^root:' /etc/shadow > "${saved}" && chmod 600 "${saved}"
 fi
 exec /bin/toybox login "$@"
 LOGIN
@@ -612,6 +615,9 @@ _assemble_production_rootfs() {
 
   _assemble_oil_runtime
   _assemble_common_rootfs_tail
+  if [ -f "${ROOTFS_DIR}/etc/dinit.d/state-mount" ]; then
+    printf '%s\n' 'waits-for = state-mount' >> "${ROOTFS_DIR}/etc/dinit.d/shell-ttyS0"
+  fi
   _assemble_native_filter_services
   _assemble_native_validate_services
 }

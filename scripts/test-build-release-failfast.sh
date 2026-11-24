@@ -38,6 +38,7 @@ done
 stub_boot_native() {
   cat > "${root}/scripts/boot-native.sh" << EOF
 #!/bin/sh
+printf '%s\n' "\${ALPENGLOW_REQUIRE_STATE}" > "${tmp}/require-state"
 mkdir -p "${root}/build/native/rootfs/etc/dinit.d"
 echo stale > "${root}/build/native/vmlinuz"
 printf 'stale' | gzip > "${root}/build/native/initramfs.cpio.gz"
@@ -49,7 +50,7 @@ EOF
 
 run_release() {
   rm -f "${tmp}/reached" "${tmp}/checker-reached"
-  PATH="${tmp}/bin:${PATH}" IMAGE_SIZE_MB=1 ALPENGLOW_EDITION=potato \
+  PATH="${tmp}/bin:${PATH}" IMAGE_SIZE_MB=1 ALPENGLOW_EDITION="${1:-potato}" \
     sh "${root}/scripts/build-release.sh" > "${tmp}/out" 2>&1
 }
 
@@ -65,5 +66,8 @@ if run_release; then fail "rootfs without editions.toml services produced a rele
 [ ! -e "${tmp}/reached" ] || fail "continued past the rootfs check: $(cat "${tmp}/reached")"
 grep -q 'check-release-rootfs: potato image does not match editions.toml' "${tmp}/out" ||
   fail "rootfs check did not run"
+[ "$(cat "${tmp}/require-state")" = 1 ] || fail "potato release must require state"
+if run_release fast; then fail "incomplete fast rootfs produced a release"; fi
+[ "$(cat "${tmp}/require-state")" = 0 ] || fail "fast release must not require state"
 
 printf 'test-build-release-failfast: ok\n'

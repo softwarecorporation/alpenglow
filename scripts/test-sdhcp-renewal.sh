@@ -106,6 +106,10 @@ while [ "${count}" -lt 150 ]; do
   sleep 1
   count=$((count + 1))
 done
+[ -f /evidence/bound-events ] && [ "$(wc -l < /evidence/bound-events)" -ge 2 ] || {
+  echo 'DHCP client did not complete the second lease hook before timeout' >&2
+  exit 1
+}
 kill -INT "${capture}"
 wait "${capture}"
 python3 /test/verify-packets.py /evidence/renewal.pcap

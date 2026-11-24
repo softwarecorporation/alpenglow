@@ -180,17 +180,7 @@ def validate(image, work):
         overlay = work / (name + ".qcow2")
         run("qemu-img", "create", "-q", "-f", "qcow2", "-F", "raw", "-b", str(disk), str(overlay))
         pcap = work / (name + ".pcap")
-        capture = subprocess.Popen(["tcpdump", "-U", "-i", "agtap0", "-w", str(pcap),
-                                    "udp port 67 or udp port 68"], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
-        server = subprocess.Popen([
-            "dnsmasq", "--keep-in-foreground", "--conf-file=/dev/null", "--user=root",
-            "--interface=agtap0", "--bind-interfaces", "--port=0", "--dhcp-authoritative",
-            "--dhcp-range=192.0.2.20,192.0.2.20,255.255.255.0,120s",
-            "--dhcp-option=option:router,192.0.2.1", "--dhcp-option=option:dns-server,192.0.2.1",
-            "--dhcp-leasefile=" + str(work / (name + ".leases")),
-            "--pid-file=" + str(work / (name + ".pid")),
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        capture = server = None
         password = "Ag!" + secrets.token_urlsafe(24)
         wrong_password = "Wrong!" + secrets.token_urlsafe(24)
         marker = secrets.token_hex(16)
@@ -208,6 +198,17 @@ def validate(image, work):
             args += ["-drive", "if=pflash,format=raw,readonly=on,file=" + code,
                      "-drive", "if=pflash,format=raw,file=" + str(varstore)]
         try:
+            capture = subprocess.Popen(["tcpdump", "-U", "-i", "agtap0", "-w", str(pcap),
+                                        "udp port 67 or udp port 68"], stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+            server = subprocess.Popen([
+                "dnsmasq", "--keep-in-foreground", "--conf-file=/dev/null", "--user=root",
+                "--interface=agtap0", "--bind-interfaces", "--port=0", "--dhcp-authoritative",
+                "--dhcp-range=192.0.2.20,192.0.2.20,255.255.255.0,120s",
+                "--dhcp-option=option:router,192.0.2.1", "--dhcp-option=option:dns-server,192.0.2.1",
+                "--dhcp-leasefile=" + str(work / (name + ".leases")),
+                "--pid-file=" + str(work / (name + ".pid")),
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1)
             require(server.poll() is None and capture.poll() is None, "isolated DHCP/capture startup failed")
             for boot in (0, 1):
@@ -234,12 +235,21 @@ def validate(image, work):
                         console.expect(rb"password:", "persisted-password authentication")
                     console.send(password)
                     console.expect(rb"(?:^|\n)[^\r\n]*[#$] $", "authenticated root shell")
+                    if boot == 0:
+                        console.send("/bin/busybox passwd -a sha512 root")
+                        console.expect(rb"new password:", "root password change")
+                        wrong_password = password
+                        password = "Ag!" + secrets.token_urlsafe(24)
+                        console.send(password)
+                        console.expect(rb"retype password:", "changed-password confirmation")
+                        console.send(password)
+                        console.expect(rb"(?:^|\n)[^\r\n]*[#$] $", "password change completed")
                     console.command(
                         "/bin/busybox awk '$2 == \"/state\" && $3 == \"bcachefs\" && "
                         "$4 ~ /(^|,)rw(,|$)/ {ok=1} END {exit !ok}' /proc/mounts && "
                         "test -s /state/etc/root-shadow && "
                         "test \"$(/bin/busybox stat -c %a /state/etc/root-shadow)\" = 600 && "
-                        "(grep '^root:' /etc/shadow | /bin/busybox cmp - /state/etc/root-shadow)",
+                        "test \"$(grep '^root:' /etc/shadow)\" = \"$(grep '^root:' /state/etc/root-shadow)\"",
                         name + " writable state and saved root password")
                     print(name + ": PASS authenticated console, writable bcachefs and private saved password "
                           + ("(initial boot)" if boot == 0 else "(after reboot)"), flush=True)
@@ -274,7 +284,7 @@ def validate(image, work):
                         console.command(" && ".join("test \"$(cat " + path + ")\" = '" + marker + "'" for path in paths)
                                         + " && rm -f " + " ".join(paths) + " && /bin/busybox sync",
                                         name + " state/home/Oil persistence across reboot")
-                        print(name + ": PASS reboot, wrong-password rejection, original-password login, "
+                        print(name + ": PASS reboot, old-password rejection, changed-password login, "
                               "persisted state/home/Oil and automatic network recovery", flush=True)
                 finally:
                     if console:
@@ -282,8 +292,10 @@ def validate(image, work):
                     stop(proc)
         finally:
             password = wrong_password = ""
-            stop(capture)
-            stop(server)
+            if capture is not None:
+                stop(capture)
+            if server is not None:
+                stop(server)
             overlay.unlink(missing_ok=True)
     print("PASS: combined acceptance; no credentials, hashes, serial transcripts or used overlays retained", flush=True)
 
