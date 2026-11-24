@@ -10,7 +10,7 @@
 
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::pkcs8::DecodePublicKey;
-use rsa::RsaPublicKey;
+use rsa::PublicKey;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use signature::Verifier;
@@ -30,7 +30,7 @@ pub fn verify_rsa_signature(
     hash: SigHash,
     pubkey_pem: &str,
 ) -> Result<()> {
-    let pubkey = RsaPublicKey::from_public_key_pem(pubkey_pem)
+    let pubkey = PublicKey::from_public_key_pem(pubkey_pem)
         .map_err(|e| OilError::Install(format!("bad public key: {e}")))?;
     let sig = Signature::try_from(signature)
         .map_err(|e| OilError::Install(format!("bad signature bytes: {e}")))?;

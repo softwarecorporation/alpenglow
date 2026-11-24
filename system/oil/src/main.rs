@@ -872,7 +872,7 @@ fn install_package(pkg: &system::registry::PackageMetadata, dest: &Path) -> Resu
     }
 
     if let Some(expected) = &pkg.sha256 {
-        let actual = format!("{:x}", hasher.finalize());
+        let actual = hex::encode(hasher.finalize());
         let expected = expected.trim().to_ascii_lowercase();
         if actual != expected {
             return Err(error::OilError::ChecksumMismatch { expected, actual });

@@ -10,7 +10,7 @@ pub fn insecure_mode() -> bool {
 
 pub fn verify_sha256(data: &[u8], expected: &str) -> Result<()> {
     use sha2::{Digest, Sha256};
-    let actual = format!("{:x}", Sha256::digest(data));
+    let actual = hex::encode(Sha256::digest(data));
     let expected = expected.trim().to_ascii_lowercase();
     if actual != expected {
         return Err(OilError::ChecksumMismatch { expected, actual });

@@ -1,0 +1,28 @@
+# cargo-deny advisory configuration.
+#
+# Scope rule: this list contains ONLY advisories with no patched release
+# (unfixable today). Never add an advisory that has a fixed upgrade
+# available -- upgrade the dependency instead.
+[advisories]
+yanked = "deny"
+unsound = "all"
+ignore = [
+    # Unmaintained crates with no patched release (abandoned upstream);
+    # warnings only, not vulnerabilities:
+    "RUSTSEC-2025-0052",  # async-std 1.13.2
+    "RUSTSEC-2024-0384",  # instant 0.1.13
+    "RUSTSEC-2024-0436",  # paste 1.0.15
+    "RUSTSEC-2026-0173",  # proc-macro-error2 2.0.1
+    "RUSTSEC-2025-0134",  # rustls-pemfile 2.2.0
+    "RUSTSEC-2026-0206",  # rustybuzz 0.14.1, 0.20.1
+    "RUSTSEC-2026-0192",  # ttf-parser 0.20.0, 0.21.1, 0.25.1
+    # zvariant/zbus_names/zvariant_derive 5.x: merged into zbus 6 (patched = []);
+    # pulled transitively via gpui -> ashpd/oo7 -> zbus 5, no compatible fix.
+    "RUSTSEC-2026-0370",  # zvariant 5.12.0
+    "RUSTSEC-2026-0371",  # zbus_names 4.3.2
+    "RUSTSEC-2026-0372",  # zvariant_derive 5.12.0
+    # Expires 2026-12-30 (90 days after publication on 2026-10-01).
+    # GPUI's HTTP client needs async-std for archive extraction; the warning
+    # concerns maintenance, and no compatible release removes this dependency.
+    { id = "RUSTSEC-2026-0441", reason = "Unmaintained pin-utils is required by async-std in the pinned GPUI HTTP client; migration requires a GUI dependency upgrade" },
+]
