@@ -186,7 +186,7 @@ fi
 if [ "${FAST}" != "1" ] && command -v "${ZIG}" >/dev/null 2>&1; then
   if [ ! -f "${OUT_DIR}/alpenglow-ctl/bin/alpenglow-ctl" ]; then
     echo "→ Building alpenglow-ctl..."
-    (cd "${ROOT_DIR}/system/alpenglow-ctl" && "${ZIG}" build -Drelease=true -Dtarget=x86_64-linux-musl --prefix "${OUT_DIR}/alpenglow-ctl") 2>&1 | tail -5
+    (cd "${ROOT_DIR}/system/alpenglow-ctl" && "${ZIG}" build -Drelease=true -Dtarget=x86_64-linux-musl --prefix "${OUT_DIR}/alpenglow-ctl")
   fi
 fi
 
@@ -308,6 +308,7 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
   echo "→ Building userspace services..."
   # iwd — modern WiFi daemon (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
+    set -e
     apk add --no-cache gcc musl-dev make curl tar xz linux-headers pkgconf >/dev/null 2>&1
     IWD_VERSION="2.18"
     cd /tmp
@@ -320,33 +321,32 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
       CC="gcc" CFLAGS="-static -Os -s" >/dev/null 2>&1
     make -j$(nproc) >/dev/null 2>&1
     make install DESTDIR=/out/iwd >/dev/null 2>&1
-  ' 2>&1 | tail -1
+  ' 2>&1
   if [ -f "${OUT_DIR}/iwd/usr/libexec/iwd" ]; then
     echo "  iwd: ${OUT_DIR}/iwd/usr/libexec/iwd"
   fi
 
   # greetd — login greeter (Rust, static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" -v "${ROOT_DIR}/..:/host" alpine:3.21 sh -c '
+    set -e
     apk add --no-cache curl tar xz gcc musl-dev rust cargo >/dev/null 2>&1
     GRETD_VERSION="0.10.3"
     cd /tmp
     curl -fsSL "https://gitlab.com/mobian1/greetd/-/archive/v${GRETD_VERSION}/greetd-v${GRETD_VERSION}.tar.gz" -o greetd.tar.gz 2>/dev/null
-    tar -xf greetd.tar.gz 2>/dev/null || exit 0
-    [ -d "greetd-v${GRETD_VERSION}" ] || exit 0
+    tar -xf greetd.tar.gz
     cd "greetd-v${GRETD_VERSION}"
     RUSTFLAGS="-C target-feature=+crt-static -C link-self-contained=yes" \
-    cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || true
-    if [ -f "target/x86_64-unknown-linux-musl/release/greetd" ]; then
-      mkdir -p /out/greetd/usr/bin
-      cp target/x86_64-unknown-linux-musl/release/greetd /out/greetd/usr/bin/
-    fi
-  ' 2>&1 | tail -1
+    cargo build --release --target x86_64-unknown-linux-musl
+    mkdir -p /out/greetd/usr/bin
+    cp target/x86_64-unknown-linux-musl/release/greetd /out/greetd/usr/bin/
+  ' 2>&1
   if [ -f "${OUT_DIR}/greetd/usr/bin/greetd" ]; then
     echo "  greetd: ${OUT_DIR}/greetd/usr/bin/greetd"
   fi
 
   # dropbear — SSH server (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
+    set -e
     apk add --no-cache gcc musl-dev make curl tar xz linux-headers >/dev/null 2>&1
     DROPBEAR_VERSION="2024.85"
     cd /tmp
@@ -366,17 +366,18 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
       CC="gcc" CFLAGS="-static -Os -s" >/dev/null 2>&1
     make -j$(nproc) PROGRAMS="dropbear dropbearkey dropbearconvert" >/dev/null 2>&1
     make install DESTDIR=/out/dropbear >/dev/null 2>&1
-  ' 2>&1 | tail -1
+  ' 2>&1
   if [ -f "${OUT_DIR}/dropbear/usr/bin/dropbear" ]; then
     echo "  dropbear: ${OUT_DIR}/dropbear/usr/bin/dropbear"
   fi
 
   # chrony — NTP daemon (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
+    set -e
     apk add --no-cache gcc musl-dev make curl tar xz >/dev/null 2>&1
     CHRONY_VERSION="4.5"
     cd /tmp
-    curl -fsSL "https://chrony-project.org/releases/chrony-${CHRONY_VERSION}.tar.gz" -o chrony.tar.gz 2>/dev/null || exit 0
+    curl -fsSL "https://chrony-project.org/releases/chrony-${CHRONY_VERSION}.tar.gz" -o chrony.tar.gz
     echo "19fe1d9f4664d445a69a96c71e8fdb60bcd8df24c73d1386e02287f7366ad422  chrony.tar.gz" | sha256sum -c - || exit 1
     tar -xf chrony.tar.gz
     cd "chrony-${CHRONY_VERSION}"
@@ -385,22 +386,23 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
       CC="gcc" CFLAGS="-static -Os -s" >/dev/null 2>&1
     make -j$(nproc) >/dev/null 2>&1
     make install DESTDIR=/out/chrony >/dev/null 2>&1
-  ' 2>&1 | tail -1
+  ' 2>&1
   if [ -f "${OUT_DIR}/chrony/usr/sbin/chronyd" ]; then
     echo "  chronyd: ${OUT_DIR}/chrony/usr/sbin/chronyd"
   fi
 
   # dnsmasq — local DNS caching resolver (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
+    set -e
     apk add --no-cache gcc musl-dev make curl tar xz linux-headers >/dev/null 2>&1
     DNSMASQ_VERSION="2.90"
     cd /tmp
-    curl -fsSL "https://thekelleys.org.uk/dnsmasq/dnsmasq-${DNSMASQ_VERSION}.tar.xz" -o dnsmasq.tar.xz 2>/dev/null || exit 0
+    curl -fsSL "https://thekelleys.org.uk/dnsmasq/dnsmasq-${DNSMASQ_VERSION}.tar.xz" -o dnsmasq.tar.xz
     tar -xf dnsmasq.tar.xz
     cd "dnsmasq-${DNSMASQ_VERSION}"
     make -j$(nproc) CC="gcc" CFLAGS="-static -Os -s" PREFIX=/usr >/dev/null 2>&1
     make install DESTDIR=/out/dnsmasq PREFIX=/usr >/dev/null 2>&1
-  ' 2>&1 | tail -1
+  ' 2>&1
   if [ -f "${OUT_DIR}/dnsmasq/usr/sbin/dnsmasq" ]; then
     echo "  dnsmasq: ${OUT_DIR}/dnsmasq/usr/sbin/dnsmasq"
   fi

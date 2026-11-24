@@ -74,4 +74,31 @@ fi
   cat "${tmp}/output" >&2
   exit 1
 }
+# A failed requested service build must stop even when old binaries exist.
+sed -n '/^# Build userspace services$/,/^if \[ "${GRAPHICAL}" = "1" \]; then$/p' "${root}/scripts/boot-native.sh" |
+  sed '$d' > "${tmp}/services.sh"
+cat > "${tmp}/bin/docker" <<'EOF'
+#!/bin/sh
+count=$(cat "${PROBE_LOG}" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s' "$count" > "${PROBE_LOG}"
+[ "$count" -ne "$PROBE_FAIL_AT" ] || exit 71
+EOF
+chmod +x "${tmp}/bin/docker"
+for binary in iwd/usr/libexec/iwd greetd/usr/bin/greetd dropbear/usr/bin/dropbear chrony/usr/sbin/chronyd dnsmasq/usr/sbin/dnsmasq; do
+  mkdir -p "${tmp}/build/native/$(dirname "$binary")"
+  printf 'stale binary\n' > "${tmp}/build/native/${binary}"
+done
+for fail_at in 1 2 3 4 5; do
+  printf 0 > "${tmp}/calls"
+  status=0
+  PATH="${tmp}/bin:${PATH}" PROBE_LOG="${tmp}/calls" PROBE_FAIL_AT="$fail_at" \
+    BUILD_SERVICES=1 OUT_DIR="${tmp}/build/native" ROOT_DIR="${root}" \
+    sh -eu "${tmp}/services.sh" > "${tmp}/output" 2>&1 || status=$?
+  [ "$status" -eq 71 ] && [ "$(cat "${tmp}/calls")" -eq "$fail_at" ] || {
+    echo "service build $fail_at failure was masked (status $status)" >&2
+    cat "${tmp}/output" >&2
+    exit 1
+  }
+done
 echo 'release stops on failure and selects the freshly built initramfs'
