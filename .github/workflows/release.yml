@@ -206,12 +206,17 @@ jobs:
       - name: Boot exact live ISO with both firmwares
         run: |
           set -eu
+          . scripts/lib/qemu-boot-x86_64.sh
+          OVMF_CODE=$(qemu_ovmf_code)
+          OVMF_VARS_FILE=$(mktemp)
+          trap 'rm -f "$OVMF_VARS_FILE"' EXIT
+          cp "$(qemu_ovmf_vars "$OVMF_CODE")" "$OVMF_VARS_FILE"
           iso=build/release/assets/alpenglow-validation-potato-x86_64.iso
           test -s "$iso"
           for firmware in seabios ovmf; do
             set +e
             if [ "$firmware" = ovmf ]; then
-              timeout 180 qemu-system-x86_64 -machine q35 -m 768 -smp 2 -display none -monitor none -serial stdio -no-reboot -bios /usr/share/OVMF/OVMF_CODE.fd -cdrom "$iso" > "evidence/iso-$firmware.log" 2>&1
+              timeout 180 qemu-system-x86_64 -machine q35 -m 768 -smp 2 -display none -monitor none -serial stdio -no-reboot -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE" -drive "if=pflash,format=raw,file=$OVMF_VARS_FILE" -cdrom "$iso" > "evidence/iso-$firmware.log" 2>&1
             else
               timeout 180 qemu-system-x86_64 -machine q35 -m 768 -smp 2 -display none -monitor none -serial stdio -no-reboot -cdrom "$iso" > "evidence/iso-$firmware.log" 2>&1
             fi
