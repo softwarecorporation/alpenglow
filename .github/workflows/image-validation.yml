@@ -1,0 +1,124 @@
+name: PR image validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  potato:
+    if: github.event.pull_request.number == 628
+    name: Exact potato image boot and persistence
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Record exact candidate source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD | tee evidence/source.txt
+          git status --porcelain --untracked-files=no | tee evidence/source-status.txt
+          test ! -s evidence/source-status.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential cpio curl dosfstools dwarves flex gdisk libelf-dev libssl-dev lz4 ovmf pkg-config qemu-system-x86 qemu-utils zstd
+          sudo tee /usr/local/bin/mkfs.bcachefs >/dev/null <<'SH'
+          #!/bin/sh
+          set -eu
+          for device do :; done
+          case "$device" in
+            /dev/loop[0-9]*) ;;
+            *) echo 'validation formatter accepts only disposable loop devices' >&2; exit 1 ;;
+          esac
+          test -b "$device"
+          exec docker run --rm --device "$device" alpine:3.23 sh -ec 'apk add --no-cache bcachefs-tools >/dev/null; exec mkfs.bcachefs "$@"' sh "$@"
+          SH
+          sudo chmod 755 /usr/local/bin/mkfs.bcachefs
+      - name: Verify kernel VFAT on a disposable loop image
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "$RUNNER_TEMP/vfat-preflight.XXXXXX")
+          loop=
+          cleanup() {
+            if mountpoint -q "$work/mount"; then sudo umount "$work/mount"; fi
+            if [ -n "$loop" ]; then sudo losetup -d "$loop"; fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          truncate -s 64M "$work/disposable.img"
+          mkdir "$work/mount"
+          loop=$(sudo losetup --find --show "$work/disposable.img")
+          sudo mkfs.vfat -F 32 "$loop"
+          sudo mount -t vfat "$loop" "$work/mount"
+          test "$(findmnt -n -o FSTYPE --mountpoint "$work/mount")" = vfat
+          printf '%s\n' kernel-vfat-loop-preflight | sudo tee "$work/mount/sentinel" >/dev/null
+          sudo umount "$work/mount"
+          sudo mount -t vfat "$loop" "$work/mount"
+          test "$(cat "$work/mount/sentinel")" = kernel-vfat-loop-preflight
+          { uname -a; findmnt --mountpoint "$work/mount"; echo 'VFAT_PREFLIGHT=PASS'; } | tee evidence/vfat.txt
+      - name: Verify expected host compiler and record toolchains
+        run: |
+          set -euo pipefail
+          {
+            cat /etc/os-release
+            gcc --version
+            gcc -Q --help=target | grep -E 'march=|mtune='
+            rustc -Vv
+            cargo -V
+            zig version
+            docker version
+            qemu-system-x86_64 --version
+            docker run --rm alpine:3.21 sh -ec 'apk add --no-cache gcc musl-dev >/dev/null; gcc --version; apk info -v musl'
+          } 2>&1 | tee evidence/toolchains.txt
+          . /etc/os-release
+          test "$ID:$VERSION_ID" = ubuntu:26.04
+          test "$(gcc -dumpversion | cut -d. -f1)" = 15
+          test "$(zig version)" = 0.16.0
+      - name: Build exact candidate with the unmodified full image script
+        env:
+          ALPENGLOW_ARCH: x86_64
+          ALPENGLOW_EDITION: potato
+          ALPENGLOW_REQUIRE_KERNEL_FAT: '1'
+          KERNEL_7: '0'
+        run: |
+          set -euo pipefail
+          sh scripts/build-release.sh 2>&1 | tee evidence/build.log
+          git diff --exit-code
+          sha256sum build/release/alpenglow.img | tee evidence/image.sha256
+          zstd -T0 -3 build/release/alpenglow.img -o build/release/alpenglow.img.zst
+          sha256sum build/release/alpenglow.img.zst | tee evidence/compressed-image.sha256
+          sh scripts/check-compressed-initramfs.sh build/release/alpenglow.img.zst build/release/initramfs.cpio.lz4 2>&1 | tee evidence/content.log
+      - name: Boot the generated disk with both firmwares and verify persistence
+        run: |
+          set -euo pipefail
+          sh scripts/test-release-x86-boot.sh build/release/alpenglow.img.zst 2>&1 | tee evidence/disk-boot.log
+          sha256sum -c evidence/image.sha256
+          sha256sum -c evidence/compressed-image.sha256
+          git diff --exit-code
+      - name: Retain exact generated disk and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr628-image-${{ github.event.pull_request.head.sha }}
+          path: |
+            evidence/
+            build/release/alpenglow.img.zst
+          if-no-files-found: warn
+          retention-days: 14
