@@ -78,7 +78,7 @@ KERNEL_BUILD=1 ./scripts/boot-native.sh
 | Kernel ctrl | kernelctl (Zig, 89KB) | Static, µs-scale startup |
 | Network | netd (Zig), udhcpc, iwd | Zero-external-deps netd |
 | Root FS | erofs/squashfs immutable image loaded into RAM. bcachefs for `/home` and mutable state |
-| Desktop | Wayland + Smithay target via [Alpenglowed](https://github.com/tschk/alpenglowed) | Default graphical session. [Soliloquy](https://github.com/tschk/soliloquy) `sold` is an optional session for the internet role |
+| Desktop | Wayland + Smithay target via [Alpenglowed](https://github.com/softwarecorporation/alpenglowed) | Default graphical session. [Soliloquy](https://github.com/softwarecorporation/soliloquy) `sold` is an optional session for the internet role |
 | Security | Landlock, no loadable kernel modules, immutable RAM root, locked root, key-only SSH | AppArmor and module signing are not shipped: kernels are built without module support, and AppArmor would need a parser and profiles the image does not carry |
 | Audio | ALSA + PipeWire |
 | Kernel | kernel.org latest stable with CONFIG_RUST=y |
@@ -177,7 +177,7 @@ Alpenglow has one root model:
 
 **First boot** — root ships locked. The first console login sets its password, kept on `/state`. SSH (dropbear) is key-only. On potato and internet, add keys to `/root/.ssh/authorized_keys`; it and the host keys live on `/state` once it is mounted; the desktop image refuses root over SSH and reads `~/.ssh` instead.
 
-**Desktop** — `BUILD_PROFILE=desktop` adds the graphical stack and [Alpenglowed](https://github.com/tschk/alpenglowed) desktop environment on top of the immutable rootfs model. It is separate from `standard`; it is not a normal root-on-disk mode. Alpenglowed is a Wayland client on Cage. Smithay `--compositor` is experimental and is not built into the image.
+**Desktop** — `BUILD_PROFILE=desktop` adds the graphical stack and [Alpenglowed](https://github.com/softwarecorporation/alpenglowed) desktop environment on top of the immutable rootfs model. It is separate from `standard`; it is not a normal root-on-disk mode. Alpenglowed is a Wayland client on Cage. Smithay `--compositor` is experimental and is not built into the image.
 
 ## Services
 

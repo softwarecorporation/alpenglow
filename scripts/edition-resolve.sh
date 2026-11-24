@@ -100,11 +100,13 @@ ALPENGLOW_AUTOLOGIN="" ALPENGLOW_DESKTOP_FULL="" WORLD_FILE="" SESSION=""
 ROLE="" ARTIFACT="" LOCK_SESSION="" SHELL_LOGIN="" FLEET_AGENT="" ALPENGLOWED_ROLE=""
 STATE_COMPRESSION="" STATE_SNAPSHOTS="" KERNEL_POLICY="" ZIG_INIT_KEY=""
 
+_edition_old_ifs="$IFS"
 IFS='
 '
 # shellcheck disable=SC2086
 set -- ${_lines}
-IFS=' '
+IFS="${_edition_old_ifs}"
+unset _edition_old_ifs
 while [ "$#" -gt 0 ]; do
   line="$1"
   shift

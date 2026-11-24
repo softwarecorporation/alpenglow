@@ -5,9 +5,6 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 . "${ROOT_DIR}/scripts/lib/initramfs-codec-identity.sh"
-# The edition decides services, world, /state format and kernel profile.
-# edition-resolve.sh honours ALPENGLOW_EDITION, then _SKU, then _ROLE, then potato.
-. "${ROOT_DIR}/scripts/edition-resolve.sh"
 OUT_DIR="${ROOT_DIR}/build/release"
 IMAGE="${OUT_DIR}/alpenglow.img"
 KERNEL="${OUT_DIR}/vmlinuz"
@@ -33,7 +30,6 @@ sgdisk_ok() {
 }
 
 echo "=== Alpenglow release build v${ALPENGLOW_VERSION} ==="
-echo "  edition: ${ALPENGLOW_SKU}"
 echo "  arch:  ${ALPENGLOW_ARCH}"
 echo "  image: ${IMAGE}"
 echo "  size:  ${IMAGE_SIZE_MB}MB"
@@ -42,20 +38,30 @@ echo ""
 mkdir -p "${OUT_DIR}" "${MNT_ROOT}" "${MNT_STATE}"
 
 # ── 1. Build kernel + initramfs ────────────────────────────────────
-# Full build output, and any failure stops the release: an image without its
-# kernel, services or package manager must never be produced.
 echo "→ Building kernel and initramfs..."
-KERNEL_BUILD=1 BUILD_ONLY=1 "${ROOT_DIR}/scripts/boot-native.sh"
-sh "${ROOT_DIR}/scripts/check-release-rootfs.sh" "${OUT_DIR}/../native/rootfs"
-cp "${OUT_DIR}/../native/vmlinuz" "${KERNEL}"
-INITRAMFS="$(initramfs_resolve_release_artifact "${OUT_DIR}/../native" "${OUT_DIR}")" || {
-  if [ -f "${OUT_DIR}/initramfs.cpio.gz" ]; then
-    INITRAMFS="${OUT_DIR}/initramfs.cpio.gz"
-  else
-    echo "missing built initramfs under ${OUT_DIR}" >&2
-    exit 1
-  fi
+NATIVE_DIR="${ROOT_DIR}/build/native"
+mkdir -p "${NATIVE_DIR}"
+if command -v lz4 >/dev/null 2>&1; then
+  NATIVE_INITRAMFS="${NATIVE_DIR}/initramfs.cpio.lz4"
+else
+  NATIVE_INITRAMFS="${NATIVE_DIR}/initramfs.cpio.zst"
+fi
+rm -f "${NATIVE_DIR}/vmlinuz" "${NATIVE_INITRAMFS}"
+KERNEL_BUILD=1 BUILD_ONLY=1 INITRAMFS="${NATIVE_INITRAMFS}" "${ROOT_DIR}/scripts/boot-native.sh"
+sh "${ROOT_DIR}/scripts/check-release-rootfs.sh" "${NATIVE_DIR}/rootfs"
+test -f "${NATIVE_DIR}/vmlinuz" && test -f "${NATIVE_INITRAMFS}" || {
+  echo "boot build did not produce the requested kernel and initramfs" >&2
+  exit 1
 }
+python3 "${ROOT_DIR}/scripts/check-release-architecture.py" \
+  "${ALPENGLOW_ARCH}" "${NATIVE_DIR}/rootfs" "${NATIVE_DIR}/vmlinuz"
+if [ "${ALPENGLOW_ARCH}" = "x86_64" ] && [ "$(od -An -tu1 -j 564 -N 1 "${NATIVE_DIR}/vmlinuz" | tr -d ' ')" != "1" ]; then
+  echo "x86_64 UEFI requires a relocatable kernel (CONFIG_RELOCATABLE=y)" >&2
+  exit 1
+fi
+cp "${NATIVE_DIR}/vmlinuz" "${KERNEL}"
+INITRAMFS="${OUT_DIR}/$(basename -- "${NATIVE_INITRAMFS}")"
+cp "${NATIVE_INITRAMFS}" "${INITRAMFS}"
 test -f "${KERNEL}" || { echo "missing built kernel: ${KERNEL}" >&2; exit 1; }
 test -n "${INITRAMFS}" && test -f "${INITRAMFS}" || { echo "missing built initramfs under ${OUT_DIR}" >&2; exit 1; }
 initramfs_assert_codec_identity "${INITRAMFS}" || exit 1
@@ -70,6 +76,15 @@ if [ ! -f "${LIMINE_DIR}/limine" ]; then
   tar -xJf "${OUT_DIR}/limine.tar.xz" -C "${LIMINE_DIR}" --strip-components=1 2>/dev/null || {
     tar -xJf "${OUT_DIR}/limine.tar.xz" -C "${LIMINE_DIR}"
   }
+  make -C "${LIMINE_DIR}"
+fi
+[ -x "${LIMINE_DIR}/limine" ] && [ -s "${LIMINE_DIR}/limine-bios.sys" ] || {
+  echo "missing Limine installer or limine-bios.sys in ${LIMINE_DIR}" >&2
+  exit 1
+}
+if [ "${ALPENGLOW_ARCH}" = "x86_64" ] && [ ! -s "${LIMINE_DIR}/BOOTX64.EFI" ]; then
+  echo "missing Limine BOOTX64.EFI in ${LIMINE_DIR}" >&2
+  exit 1
 fi
 
 # ── 3. Create disk image ───────────────────────────────────────────
@@ -85,34 +100,41 @@ STATE_END=$(( STATE_START + (STATE_SIZE_MB * 2048) ))
 LIMINE_START=$(( STATE_END + 2048 ))
 
 sgdisk_ok -o "${IMAGE}"
-sgdisk_ok -n 1:${ROOT_START}:${ROOT_END} -t 1:8300 -c 1:"alpenglow-boot" "${IMAGE}"
+if [ "${ALPENGLOW_ARCH}" = "x86_64" ]; then
+  BOOT_TYPE=ef00
+else
+  BOOT_TYPE=8300
+fi
+sgdisk_ok -n 1:${ROOT_START}:${ROOT_END} -t 1:${BOOT_TYPE} -c 1:"alpenglow-boot" "${IMAGE}"
 sgdisk_ok -n 2:${STATE_START}:${STATE_END} -t 2:8300 -c 2:"alpenglow-state" "${IMAGE}"
-sgdisk_ok -n 3:${LIMINE_START}: -t 3:8301 -c 3:"Limine" "${IMAGE}"
+sgdisk_ok -n 3:${LIMINE_START}: -t 3:ef02 -c 3:"Limine" "${IMAGE}"
 sgdisk_ok -A 3:set:2 "${IMAGE}"
 
 # ── 4. Format partitions ──────────────────────────────────────────
 echo "→ Formatting partitions..."
-# Release mounts and the loop device on any exit; each step may fail alone.
-LOOP_DEV=""
-cleanup() {
-  for mnt in "${MNT_STATE}" "${MNT_ROOT}"; do
-    if grep -q " ${mnt} " /proc/mounts 2>/dev/null; then
-      sudo umount "${mnt}" || echo "warning: could not unmount ${mnt}" >&2
-    fi
-  done
-  if [ -n "${LOOP_DEV}" ]; then
-    sudo losetup -d "${LOOP_DEV}" || echo "warning: could not detach ${LOOP_DEV}" >&2
-  fi
+LOOP_ROOT=$(sudo losetup -f --show -o $((ROOT_START * 512)) --sizelimit $(((ROOT_END - ROOT_START + 1) * 512)) "${IMAGE}") || {
+  echo "failed to attach release boot partition to a loop device" >&2
+  exit 1
 }
-trap cleanup EXIT
-trap 'exit 130' INT TERM
-LOOP_DEV="$(sudo losetup -fP --show "${IMAGE}")"
-[ -n "${LOOP_DEV}" ] || { echo "losetup failed for ${IMAGE}" >&2; exit 1; }
-LOOP_ROOT="${LOOP_DEV}p1"
-LOOP_STATE="${LOOP_DEV}p2"
-LOOP_LIMINE="${LOOP_DEV}p3"
+[ -n "${LOOP_ROOT}" ] || { echo "losetup returned no boot loop device" >&2; exit 1; }
+LOOP_STATE=""
+cleanup() {
+  sudo umount "${MNT_ROOT}" 2>/dev/null || true
+  [ -z "${LOOP_STATE}" ] || sudo losetup -d "${LOOP_STATE}" 2>/dev/null || true
+  sudo losetup -d "${LOOP_ROOT}" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+LOOP_STATE=$(sudo losetup -f --show -o $((STATE_START * 512)) --sizelimit $(((STATE_END - STATE_START + 1) * 512)) "${IMAGE}") || {
+  echo "failed to attach release state partition to a loop device" >&2
+  exit 1
+}
+[ -n "${LOOP_STATE}" ] || { echo "losetup returned no state loop device" >&2; exit 1; }
 
-sudo mkfs.ext4 -L alpenglow-boot "${LOOP_ROOT}" >/dev/null
+if [ "${ALPENGLOW_ARCH}" = "x86_64" ]; then
+  sudo mkfs.vfat -F 32 -n ALPGBOOT "${LOOP_ROOT}" >/dev/null
+else
+  sudo mkfs.ext4 -L alpenglow-boot "${LOOP_ROOT}" >/dev/null
+fi
 # /state compression is a format-time default (editions.toml state_compression);
 # it lives in the superblock, so mounts need no extra option. fast: none.
 STATE_MKFS_OPTS=""
@@ -125,6 +147,11 @@ sudo mkfs.bcachefs ${STATE_MKFS_OPTS} -L alpenglow-state "${LOOP_STATE}" >/dev/n
 # ── 5. Install boot files ──────────────────────────────────────────
 echo "→ Installing system..."
 sudo mount "${LOOP_ROOT}" "${MNT_ROOT}"
+BOOT_MOUNT_TYPE=$(findmnt -n -o FSTYPE --target "${MNT_ROOT}" 2>/dev/null || echo unknown)
+case "${BOOT_MOUNT_TYPE}" in
+  fuse*) echo "WARNING: boot filesystem uses ${BOOT_MOUNT_TYPE}; FUSE FAT assembly is not verified for release reproducibility" >&2 ;;
+  *) echo "  boot filesystem: ${BOOT_MOUNT_TYPE}" ;;
+esac
 sudo mkdir -p "${MNT_ROOT}/boot" "${MNT_ROOT}/state"
 sudo cp "${KERNEL}" "${MNT_ROOT}/boot/vmlinuz"
 sudo cp "${INITRAMFS}" "${MNT_ROOT}/boot/${INITRAMFS_BASENAME}"
@@ -144,9 +171,15 @@ verbose: no
   module_path: boot():/boot/${INITRAMFS_BASENAME}
 LIMINE
 sudo cp /tmp/limine.conf "${MNT_ROOT}/boot/limine/limine.conf"
-sudo cp "${LIMINE_DIR}/limine-bios.sys" "${MNT_ROOT}/boot/limine/"
-# GPT: stage 2 goes into partition 3 ("Limine"), as Limine's BIOS/GPT docs require.
-sudo "${LIMINE_DIR}/limine" bios-install "${IMAGE}" 3
+sudo cp "${LIMINE_DIR}/limine-bios.sys" "${MNT_ROOT}/boot/limine/limine-bios.sys"
+if [ "${ALPENGLOW_ARCH}" = "x86_64" ]; then
+  sudo mkdir -p "${MNT_ROOT}/EFI/BOOT"
+  sudo cp "${LIMINE_DIR}/BOOTX64.EFI" "${MNT_ROOT}/EFI/BOOT/BOOTX64.EFI"
+fi
+if ! sudo "${LIMINE_DIR}/limine" bios-install "${IMAGE}"; then
+  echo "failed to install the Limine BIOS bootloader" >&2
+  exit 1
+fi
 
 # ── 7. Install state partition (first-boot setup) ──────────────────
 echo "→ Setting up state partition..."
@@ -159,9 +192,16 @@ else
 fi
 
 # ── 8. Cleanup ─────────────────────────────────────────────────────
+sudo sync
 sudo umount "${MNT_ROOT}"
-sudo losetup -d "${LOOP_DEV}"
-LOOP_DEV=""
+cleanup
+trap - EXIT HUP INT TERM
+if [ "${ALPENGLOW_ARCH}" = "aarch64" ]; then
+  python3 "${ROOT_DIR}/scripts/check-release-architecture.py" --uefi-image "${IMAGE}"
+else
+  python3 "${ROOT_DIR}/scripts/check-release-architecture.py" --bios-image "${IMAGE}"
+  python3 "${ROOT_DIR}/scripts/check-release-architecture.py" --uefi-image "${IMAGE}"
+fi
 
 echo ""
 echo "✓ Alpenglow release image created:"

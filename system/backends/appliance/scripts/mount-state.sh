@@ -44,7 +44,7 @@ partname_dev() {
 state_block_dev() {
   spec="$1"
   case "${spec}" in
-    LABEL=*) blkid -L "${spec#LABEL=}" 2>/dev/null | grep . || partname_dev "${spec#LABEL=}" || true ;;
+    LABEL=*) blkid -c /dev/null -L "${spec#LABEL=}" 2>/dev/null | grep . || partname_dev "${spec#LABEL=}" || true ;;
     PARTLABEL=*) partname_dev "${spec#PARTLABEL=}" || true ;;
     /dev/*) echo "${spec}" ;;
     *) echo "${spec}" ;;
@@ -53,7 +53,7 @@ state_block_dev() {
 
 state_is_luks() {
   dev="$1"
-  [ -n "${dev}" ] && [ "$(blkid -o value -s TYPE "${dev}" 2>/dev/null)" = "crypto_LUKS" ]
+  [ -n "${dev}" ] && [ "$(blkid -p -o value -s TYPE "${dev}" 2>/dev/null)" = "crypto_LUKS" ]
 }
 
 open_luks_state() {
@@ -115,7 +115,7 @@ if ! grep -q ' /state ' /proc/mounts 2>/dev/null; then
     mount_spec="LABEL=alpenglow-state"
   fi
   mount_dev="$(open_luks_state "${mount_spec}")" || exit 1
-  mount -t bcachefs -o rw,nosuid,nodev "${mount_dev}" /state 2>/dev/null || { echo "bcachefs state mount failed: ${mount_dev}" >&2; exit 1; }
+  mount -t bcachefs -o rw,nosuid,nodev "${mount_dev}" /state || { echo "bcachefs state mount failed: ${mount_dev}" >&2; exit 1; }
 fi
 
 # Create state directories and bind them into the live filesystem.

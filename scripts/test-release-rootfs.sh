@@ -26,6 +26,9 @@ compose() (
   ALPENGLOW_MODULE="${OUT_DIR}/none.ko"
   mkdir -p "${ROOTFS_DIR}/bin" "${ROOTFS_DIR}/sbin" "${ROOTFS_DIR}/etc/alpenglow" "${ROOTFS_DIR}/dev"
   stub "${ROOTFS_DIR}/bin/toybox"
+  stub "${ROOTFS_DIR}/bin/busybox"
+  ln -s toybox "${ROOTFS_DIR}/bin/true"
+  ln -s busybox "${ROOTFS_DIR}/bin/sh"
   stub "${ROOTFS_DIR}/sbin/dinit"
   if [ "${FAST}" != "1" ]; then
     stub "${ROOTFS_DIR}/usr/local/bin/alpenglow-kernelctl"
@@ -33,7 +36,7 @@ compose() (
   fi
   [ "${KERNEL_POLICY}" = "none" ] ||
     cp "${BACKEND_DIR}/kernel-policy-${KERNEL_POLICY}.json" "${ROOTFS_DIR}/etc/alpenglow/kernel-policy.json"
-  toybox_has() { return 1; }
+  toybox_has() { case "$1" in mount|getty|true|sh|ifconfig|route) return 0 ;; *) return 1 ;; esac; }
   . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
   assemble_rootfs_config >/dev/null
 )

@@ -410,4 +410,41 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_install_state_save_io_error() -> Result<()> {
+        use std::io::ErrorKind;
+
+        for (blocked_path, expected_kind) in [
+            ("opt/oil/var/lib/oil", ErrorKind::AlreadyExists),
+            ("opt/oil/var/lib/oil/installed.json", ErrorKind::IsADirectory),
+        ] {
+            let guard = EnvGuard::new();
+            let home = tempfile::tempdir()?;
+            guard.isolate(home.path());
+            let mut state = InstallState::new()?;
+            state.mark_installed("pkg-error", Some("1.2.3"));
+            let blocked = home.path().join(blocked_path);
+            if expected_kind == ErrorKind::AlreadyExists {
+                std::fs::create_dir_all(blocked.parent().unwrap())?;
+                std::fs::write(&blocked, "not a directory")?;
+            } else {
+                std::fs::create_dir_all(&blocked)?;
+            }
+            match state.save() {
+                Err(crate::error::OilError::Io(error)) => assert_eq!(error.kind(), expected_kind),
+                other => panic!("Expected IO error for {blocked_path}, got {other:?}"),
+            }
+            if expected_kind == ErrorKind::AlreadyExists {
+                assert_eq!(std::fs::read_to_string(&blocked)?, "not a directory");
+                std::fs::remove_file(&blocked)?;
+            } else {
+                assert!(blocked.is_dir());
+                std::fs::remove_dir(&blocked)?;
+            }
+            state.save()?;
+            assert_eq!(InstallState::new()?.get("pkg-error"), state.get("pkg-error"));
+        }
+        Ok(())
+    }
 }

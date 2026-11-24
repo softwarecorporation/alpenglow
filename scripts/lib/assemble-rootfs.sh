@@ -23,7 +23,7 @@ MOUNT
 _assemble_minimal_toybox_networking() {
   cat > "${ROOTFS_DIR}/etc/dinit.d/networking" << 'NET'
 type = scripted
-command = /bin/toybox udhcpc -i eth0 -s /bin/toybox -q
+command = /bin/toybox udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q
 restart = yes
 depends-on = mount-filesystems
 NET
@@ -67,7 +67,7 @@ _merge_etc_db() {
 _assemble_boot_native_passwd() {
   mkdir -p "${ROOTFS_DIR}/etc"
   _merge_etc_db passwd << 'PASSWD'
-root:x:0:0:root:/root:/bin/toybox sh
+root:x:0:0:root:/root:/bin/sh
 seatd:x:772:772:seatd:/var/empty:/sbin/nologin
 PASSWD
   # Root ships locked ('!'): the first console login sets a password
@@ -113,8 +113,8 @@ _assemble_common_rootfs_tail() {
   cat > "${ROOTFS_DIR}/usr/share/udhcpc/default.script" << 'SCRIPT'
 #!/bin/toybox sh
 case "$1" in
-  bound|renew) /sbin/ifconfig $interface $ip netmask $subnet; route add default gw $router 2>/dev/null;;
-  deconfig) /sbin/ifconfig $interface 0.0.0.0;;
+  bound|renew) /bin/toybox ifconfig $interface $ip netmask $subnet; /bin/toybox route add default gw $router 2>/dev/null;;
+  deconfig) /bin/toybox ifconfig $interface 0.0.0.0;;
 esac
 SCRIPT
   chmod 755 "${ROOTFS_DIR}/usr/share/udhcpc/default.script"
@@ -260,7 +260,8 @@ fi
 if grep -q '^root:!:' /etc/shadow; then
   echo "First login on this machine: choose a root password."
   tries=0
-  until /bin/toybox passwd -a sha512 root; do
+  # Toybox account applets can truncate the database; use the checked BusyBox applet.
+  until /bin/busybox passwd -a sha512 root; do
     tries=$((tries + 1))
     [ "${tries}" -lt 5 ] || { echo "Could not set a password; root stays locked."; break; }
     sleep 1
@@ -458,9 +459,84 @@ _assemble_qemu_serial_login() {
   fi
   if ! grep -q '^root:' "${ROOTFS_DIR}/etc/passwd" 2>/dev/null; then
     _assemble_boot_native_passwd
-  elif ! grep -q '/bin/toybox sh' "${ROOTFS_DIR}/etc/passwd" 2>/dev/null; then
-    sed -i 's/^root:.*$/root:x:0:0:root:/root:/bin/toybox sh/' "${ROOTFS_DIR}/etc/passwd" 2>/dev/null || true
+  elif ! grep -q '^root:.*:/bin/sh$' "${ROOTFS_DIR}/etc/passwd" 2>/dev/null; then
+    sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*|\1/bin/sh|' "${ROOTFS_DIR}/etc/passwd"
   fi
+}
+
+_native_executable() (
+  path="$1"
+  count=0
+  while [ -L "${ROOTFS_DIR}${path}" ]; do
+    count=$((count + 1))
+    [ "${count}" -le 40 ] || return 1
+    target="$(readlink "${ROOTFS_DIR}${path}")"
+    case "${target}" in
+      /*) path="${target}" ;;
+      *) path="${path%/*}/${target}" ;;
+    esac
+  done
+  [ -f "${ROOTFS_DIR}${path}" ] && [ -x "${ROOTFS_DIR}${path}" ]
+)
+
+_native_service_runnable() (
+  service="$1"
+  unit="${ROOTFS_DIR}/etc/dinit.d/${service}"
+  [ -f "${unit}" ] || return 1
+  command="$(sed -n 's/^[[:space:]]*command[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' "${unit}" | head -n 1)"
+  [ -n "${command}" ] && _native_executable "${command}" || return 1
+  if [ "${command}" = /bin/toybox ]; then
+    applet="$(sed -n 's/^[[:space:]]*command[[:space:]]*=[[:space:]]*\/bin\/toybox[[:space:]]\+\([^[:space:]]*\).*/\1/p' "${unit}" | head -n 1)"
+    [ -n "${applet}" ] && toybox_has "${applet}" || return 1
+  fi
+  if [ "$(head -c 2 "${ROOTFS_DIR}${command}" 2>/dev/null || true)" = '#!' ]; then
+    interpreter="$(sed -n '1s/^#![[:space:]]*\([^[:space:]]*\).*/\1/p' "${ROOTFS_DIR}${command}")"
+    _native_executable "${interpreter}" || return 1
+  fi
+  case "${service}" in
+    mount-filesystems) toybox_has mount || return 1 ;;
+    alpenglow-zram) _native_executable /usr/local/bin/alpenglow-zramctl-zig || return 1 ;;
+    alpenglowed) _native_executable /usr/bin/alpenglowed-bin || _native_executable /usr/bin/alpenglowed || return 1 ;;
+    alpenglowed-lite) _native_executable /usr/bin/alpenglowed-lite || return 1 ;;
+    networking)
+      if [ "${command}" = /bin/toybox ]; then
+        toybox_has ifconfig || return 1
+        if [ "${applet}" = udhcpc ]; then
+          toybox_has route && _native_executable /usr/share/udhcpc/default.script || return 1
+        else
+          _native_executable /usr/sbin/sdhcp || return 1
+        fi
+      fi
+      ;;
+  esac
+  for dependency in $(sed -n 's/^[[:space:]]*depends-on[[:space:]]*=[[:space:]]*//p' "${unit}"); do
+    case " ${2:-} " in *" ${dependency} "*) return 1 ;; esac
+    _native_service_runnable "${dependency}" "${2:-} ${service}" || return 1
+  done
+)
+
+_assemble_native_filter_services() {
+  services="$(sed -n 's/^\(depends-on\|waits-for\) = //p' "${ROOTFS_DIR}/etc/dinit.d/boot")"
+  BOOT_SERVICES=""
+  for service in ${services}; do
+    if [ "${service}" = state-mount ] || _native_service_runnable "${service}"; then
+      BOOT_SERVICES="${BOOT_SERVICES} ${service}"
+    else
+      echo "  skipping unavailable native service: ${service}" >&2
+      rm -f "${ROOTFS_DIR}/etc/dinit.d/boot.d/${service}"
+    fi
+  done
+  _wire_boot_services
+}
+
+_assemble_native_validate_services() {
+  _native_executable /bin/true || { echo 'native boot command is not runnable: /bin/true' >&2; return 1; }
+  for service in $(sed -n 's/^\(depends-on\|waits-for\) = //p' "${ROOTFS_DIR}/etc/dinit.d/boot"); do
+    if ! _native_service_runnable "${service}"; then
+      echo "native boot service is not runnable: ${service}" >&2
+      return 1
+    fi
+  done
 }
 
 _assemble_minimal_rootfs() {
@@ -470,6 +546,7 @@ _assemble_minimal_rootfs() {
     _wire_boot_services
     _assemble_boot_native_passwd
     _assemble_common_rootfs_tail
+    _assemble_native_validate_services
     return
   fi
   _assemble_minimal_toybox_syslogd
@@ -481,6 +558,7 @@ _assemble_minimal_rootfs() {
   _assemble_native_boot_services
   _wire_boot_services
   _assemble_common_rootfs_tail
+  _assemble_native_validate_services
 }
 
 _assemble_production_rootfs() {
@@ -499,8 +577,8 @@ _assemble_production_rootfs() {
     fi
   fi
 
-  if [ "${BUILD_PROFILE}" = "standard" ] && ! [ -f "${ROOTFS_DIR}/usr/sbin/sdhcp" ]; then
-    if toybox_has udhcpc; then
+  if ! _native_executable /usr/sbin/sdhcp; then
+    if toybox_has udhcpc && toybox_has ifconfig && toybox_has route; then
       _assemble_minimal_toybox_networking
     fi
   fi
@@ -515,6 +593,8 @@ _assemble_production_rootfs() {
 
   _assemble_oil_runtime
   _assemble_common_rootfs_tail
+  _assemble_native_filter_services
+  _assemble_native_validate_services
 }
 
 assemble_rootfs_config() {
