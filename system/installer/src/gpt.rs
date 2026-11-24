@@ -163,13 +163,7 @@ pub fn relocate_in<T: Read + Write + Seek>(
         dev.write_all(&mbr)?;
     }
 
-    // Wipe the stale backup, but only where it really is one.
-    let old = read_sector(dev, alternate)?;
-    if &old[0..8] == SIGNATURE && alternate >= entries_sectors {
-        let zeros = vec![0u8; ((entries_sectors + 1) * SECTOR) as usize];
-        dev.seek(SeekFrom::Start((alternate - entries_sectors) * SECTOR))?;
-        dev.write_all(&zeros)?;
-    }
+    // Keep the stale backup: its unvalidated location can point into a partition.
     dev.flush()?;
     Ok(GptOutcome::Moved {
         from_lba: alternate,
@@ -341,11 +335,12 @@ mod tests {
         assert_eq!(&disk[(2 * SECTOR) as usize..][..16384], &before_entries[..]);
         // The protective MBR now spans the disk.
         assert_eq!(le32(&disk, 446 + 12), 32767);
-        // The stale backup header and entries are gone.
+        // The stale backup is retained; valid new headers do not require erasing it.
         let old_start = ((8191 - ENTRY_SECTORS) * SECTOR) as usize;
-        assert!(disk[old_start..(8192 * SECTOR) as usize]
-            .iter()
-            .all(|b| *b == 0));
+        assert_eq!(
+            disk[old_start..(8192 * SECTOR) as usize],
+            image[old_start..]
+        );
     }
 
     #[test]
@@ -358,6 +353,29 @@ mod tests {
         let outcome = relocate_in(&mut Cursor::new(&mut disk), len, image.len() as u64).unwrap();
         assert_eq!(outcome, GptOutcome::AlreadyAtEnd);
         assert_eq!(disk, after_first);
+    }
+
+    #[test]
+    fn alternate_header_pointer_inside_a_partition_never_erases_payload() {
+        let mut image = build_gpt(8192);
+        let alternate = 6000;
+        let payload =
+            ((alternate - ENTRY_SECTORS) * SECTOR) as usize..((alternate + 1) * SECTOR) as usize;
+        image[payload.clone()].fill(0xa5);
+        image[(alternate * SECTOR) as usize..][..8].copy_from_slice(SIGNATURE);
+        let header = &mut image[SECTOR as usize..][..MIN_HEADER];
+        put64(header, 32, alternate);
+        let crc = header_crc(header);
+        put32(header, 16, crc);
+        let before = image[payload.clone()].to_vec();
+        let mut disk = enlarge(&image, 16384);
+        relocate_in(
+            &mut Cursor::new(&mut disk),
+            16384 * SECTOR,
+            image.len() as u64,
+        )
+        .unwrap();
+        assert_eq!(disk[payload], before);
     }
 
     #[test]
