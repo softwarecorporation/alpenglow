@@ -7,10 +7,6 @@
 yanked = "deny"
 unsound = "all"
 ignore = [
-    # rsa 0.9.10 -- Marvin attack (RustSec RUSTSEC-2023-0071). No patched
-    # release exists upstream (patched = [] as of 2026-10-15); direct
-    # dependency of oil. Remove this entry as soon as a fixed rsa ships.
-    "RUSTSEC-2023-0071",
     # Unmaintained crates with no patched release (abandoned upstream);
     # warnings only, not vulnerabilities:
     "RUSTSEC-2025-0052",  # async-std 1.13.2

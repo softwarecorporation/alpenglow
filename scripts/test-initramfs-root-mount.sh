@@ -31,4 +31,18 @@ done
 assignment="$(sed -n '/^ROOT_DIR=/p' "${root}/scripts/build-initramfs.sh")"
 actual="$(sh -eu -c "${assignment}; printf '%s' \"\${ROOT_DIR}\"" "${root}/scripts/build-initramfs.sh")"
 [ "${actual}" = "${root}" ] || { echo "initramfs builder resolved wrong root: ${actual}" >&2; exit 1; }
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+mkdir -p "$tmp/vda3" "$tmp/vda4"
+printf 'DEVNAME=vda3\nPARTNAME=state.data\n' > "$tmp/vda3/uevent"
+printf 'DEVNAME=vda4\nPARTNAME=stateXdata\n' > "$tmp/vda4/uevent"
+for resolver in system/backends/appliance/initramfs/init system/backends/appliance/scripts/mount-state.sh; do
+  functions=$(sed -n '/^partname_dev() {$/,/^state_is_luks() {$/p' "${root}/${resolver}" | sed '$d')
+  SYSFS_BLOCK="$tmp" sh -eu -c '
+    eval "$1"
+    [ "$(state_block_dev PARTLABEL=state.data)" = /dev/vda3 ]
+    [ -z "$(state_block_dev PARTLABEL=state.missing)" ]
+    [ "$(state_block_dev /dev/mapper/state)" = /dev/mapper/state ]
+  ' resolver-test "$functions"
+done
 echo 'shell init mount failures enter recovery; builder resolves repository root'

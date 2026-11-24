@@ -110,6 +110,7 @@ build_toybox() {
     sed -i "s/# CONFIG_STATIC is not set/CONFIG_STATIC=y/" .config
     sed -i "s/# CONFIG_SH is not set/CONFIG_SH=y/" .config
     sed -i "s/# CONFIG_GETTY is not set/CONFIG_GETTY=y/" .config
+    # Account updates use BusyBox; Toybox account applets fail the safety gate.
     sed -i "s/CONFIG_VI=y/# CONFIG_VI is not set/" .config 2>/dev/null || true
     make -j$(nproc) LDFLAGS="-static" >/dev/null 2>&1
     cp toybox /out/toybox
@@ -343,7 +344,16 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
   if [ -f "${OUT_DIR}/greetd/usr/bin/greetd" ]; then
     echo "  greetd: ${OUT_DIR}/greetd/usr/bin/greetd"
   fi
+fi
 
+# Network services the edition's world file asks for (editions.toml
+# world_file) are built whatever the build profile; release images are then
+# checked for them by scripts/check-release-rootfs.sh.
+WORLD_PATH=""
+[ -n "${WORLD_FILE:-}" ] && WORLD_PATH="${BACKEND_DIR}/${WORLD_FILE}"
+world_has() { [ "${FAST}" != "1" ] && [ -n "${WORLD_PATH}" ] && grep -qx "$1" "${WORLD_PATH}"; }
+
+if [ "${BUILD_SERVICES}" = "1" ] || world_has dropbear; then
   # dropbear — SSH server (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
     set -e
@@ -367,30 +377,35 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
     make -j$(nproc) PROGRAMS="dropbear dropbearkey dropbearconvert" >/dev/null 2>&1
     make install DESTDIR=/out/dropbear >/dev/null 2>&1
   ' 2>&1
-  if [ -f "${OUT_DIR}/dropbear/usr/bin/dropbear" ]; then
-    echo "  dropbear: ${OUT_DIR}/dropbear/usr/bin/dropbear"
+  if [ -f "${OUT_DIR}/dropbear/usr/sbin/dropbear" ]; then
+    echo "  dropbear: ${OUT_DIR}/dropbear/usr/sbin/dropbear"
   fi
+fi
 
+if [ "${BUILD_SERVICES}" = "1" ] || world_has chrony; then
   # chrony — NTP daemon (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
     set -e
-    apk add --no-cache gcc musl-dev make curl tar xz >/dev/null 2>&1
+    apk add --no-cache gcc musl-dev make curl tar xz libcap-dev libcap-static >/dev/null 2>&1
     CHRONY_VERSION="4.5"
     cd /tmp
     curl -fsSL "https://chrony-project.org/releases/chrony-${CHRONY_VERSION}.tar.gz" -o chrony.tar.gz
     echo "19fe1d9f4664d445a69a96c71e8fdb60bcd8df24c73d1386e02287f7366ad422  chrony.tar.gz" | sha256sum -c - || exit 1
     tar -xf chrony.tar.gz
     cd "chrony-${CHRONY_VERSION}"
-    ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
-      --disable-ntp-signd --disable-sechash \
-      CC="gcc" CFLAGS="-static -Os -s" >/dev/null 2>&1
+    CC=gcc CFLAGS="-Os" LDFLAGS="-static -s" \
+      ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
+      --disable-ntp-signd --disable-sechash >/dev/null 2>&1
     make -j$(nproc) >/dev/null 2>&1
+    ./chronyd -v | grep -q "+PRIVDROP" || { echo "chronyd lacks required privilege dropping" >&2; exit 1; }
     make install DESTDIR=/out/chrony >/dev/null 2>&1
   ' 2>&1
   if [ -f "${OUT_DIR}/chrony/usr/sbin/chronyd" ]; then
     echo "  chronyd: ${OUT_DIR}/chrony/usr/sbin/chronyd"
   fi
+fi
 
+if [ "${BUILD_SERVICES}" = "1" ] || world_has dnsmasq; then
   # dnsmasq — local DNS caching resolver (static musl)
   docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
     set -e
@@ -405,6 +420,32 @@ if [ "${BUILD_SERVICES}" = "1" ]; then
   ' 2>&1
   if [ -f "${OUT_DIR}/dnsmasq/usr/sbin/dnsmasq" ]; then
     echo "  dnsmasq: ${OUT_DIR}/dnsmasq/usr/sbin/dnsmasq"
+  fi
+fi
+
+if world_has sdhcp; then
+  # sdhcp — DHCP client for images without udhcpc (static musl). Full log kept;
+  # dev boots go on without it, release images fail check-release-rootfs.sh.
+  rm -f "${OUT_DIR}/sdhcp/usr/sbin/sdhcp"
+  if ! docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" \
+    -v "${ROOT_DIR}/scripts/lib/sdhcp-option51.patch:/sdhcp-option51.patch:ro" alpine:3.21 sh -c '
+    set -e
+    apk add --no-cache gcc musl-dev make curl tar patch >/dev/null 2>&1
+    cd /tmp
+    curl -fsSL https://dl.2f30.org/releases/sdhcp-0.1.tar.gz -o sdhcp.tar.gz || exit 1
+    echo "08e43f3d540f62ba9b4a72774fee39074d81f272955c84dd283d8fbaef44deed  sdhcp.tar.gz" | sha256sum -c - || exit 1
+    tar -xzf sdhcp.tar.gz
+    cd sdhcp-0.1
+    patch -p1 < /sdhcp-option51.patch || exit 1
+    make CC=gcc CFLAGS="-Os -D_BSD_SOURCE" LDFLAGS="-static -s" >/dev/null
+    mkdir -p /out/sdhcp/usr/sbin
+    cp sdhcp /out/sdhcp/usr/sbin/sdhcp
+  ' > "${OUT_DIR}/sdhcp-build.log" 2>&1; then
+    tail -20 "${OUT_DIR}/sdhcp-build.log" >&2
+    echo "sdhcp build failed (log: ${OUT_DIR}/sdhcp-build.log)" >&2
+  fi
+  if [ -f "${OUT_DIR}/sdhcp/usr/sbin/sdhcp" ]; then
+    echo "  sdhcp: ${OUT_DIR}/sdhcp/usr/sbin/sdhcp"
   fi
 fi
 
@@ -440,6 +481,8 @@ for applet in sh ls cat cp mv rm mkdir rmdir ln mount umount ps kill sleep echo 
 done
 cp "${OUT_DIR}/state-tools/busybox" "${ROOTFS_DIR}/bin/busybox"
 ln -sf /bin/busybox "${ROOTFS_DIR}/bin/sh"
+"${ROOTFS_DIR}/bin/busybox" --list | grep -qx passwd || { echo "BusyBox passwd is required for console provisioning" >&2; exit 1; }
+ln -sf /bin/busybox "${ROOTFS_DIR}/bin/passwd"
 cp "${OUT_DIR}/state-tools/blkid" "${ROOTFS_DIR}/sbin/blkid"
 mkdir -p "${ROOTFS_DIR}/lib"
 cp "${OUT_DIR}/state-tools/lib/"* "${ROOTFS_DIR}/lib/"
@@ -468,11 +511,8 @@ if [ "${FAST}" != "1" ] && [ -f "${OUT_DIR}/dinit-install/sbin/dinitctl" ]; then
   cp "${OUT_DIR}/dinit-install/sbin/dinitctl" "${ROOTFS_DIR}/sbin/"
 fi
 
-# Install userspace services (if built via BUILD_SERVICES=1)
-if [ -d "${OUT_DIR}/dropbear" ]; then
-  cp -R "${OUT_DIR}/dropbear/" "${ROOTFS_DIR}/"
-  mkdir -p "${ROOTFS_DIR}/etc/dropbear"
-fi
+# Desktop-path services (if built via BUILD_SERVICES=1). Network services
+# (dropbear, chrony, dnsmasq, sdhcp) are installed by assemble_rootfs_config.
 if [ "${BUILD_PROFILE}" != "minimal" ]; then
   if [ -d "${OUT_DIR}/iwd" ]; then
     cp -R "${OUT_DIR}/iwd/" "${ROOTFS_DIR}/"
@@ -483,13 +523,6 @@ if [ "${BUILD_PROFILE}" != "minimal" ]; then
     cp -R "${OUT_DIR}/greetd/" "${ROOTFS_DIR}/"
     mkdir -p "${ROOTFS_DIR}/etc/greetd"
     cp "${BACKEND_DIR}/rootfs-overlay/etc/greetd/config.toml" "${ROOTFS_DIR}/etc/greetd/" 2>/dev/null || true
-  fi
-  if [ -d "${OUT_DIR}/chrony" ]; then
-    cp -R "${OUT_DIR}/chrony/" "${ROOTFS_DIR}/"
-    mkdir -p "${ROOTFS_DIR}/etc/chrony"
-  fi
-  if [ -d "${OUT_DIR}/dnsmasq" ]; then
-    cp -R "${OUT_DIR}/dnsmasq/" "${ROOTFS_DIR}/"
   fi
 fi
 
@@ -650,9 +683,32 @@ if [ "${FAST}" != "1" ]; then
   done
 fi
 
+# Oil (native package manager): every edition but fast. Built here and
+# installed into the rootfs by assemble_rootfs_config.
+OIL_BIN="${ROOT_DIR}/build/native/oil"
+OIL_SRC="${ROOT_DIR}/system/oil"
+if [ "${FAST}" != "1" ]; then
+  echo "→ Building Oil (native package manager)..."
+  # Oil is a workspace member, so the whole tree is mounted (read-only).
+  docker run --rm --platform linux/amd64 -v "${ROOT_DIR}:/src:ro" -v "${OUT_DIR}:/out" alpine:3.23 sh -c '
+    set -e
+    apk add --no-cache rust cargo make gcc musl-dev >/dev/null
+    cargo build --locked --release -p oil --no-default-features --features wax --manifest-path /src/Cargo.toml --target-dir /out/oil-target
+    cp /out/oil-target/release/oil /out/oil
+    cp -L /usr/lib/libgcc_s.so.1 /out/libgcc_s.so.1
+  '
+  [ -f "${OIL_BIN}" ] && echo "  oil: ${OIL_BIN}"
+fi
+
 # shellcheck source=scripts/lib/assemble-rootfs.sh
 . "${ROOT_DIR}/scripts/lib/assemble-rootfs.sh"
 assemble_rootfs_config
+
+if [ "${FAST}" != "1" ]; then
+  cp "${OUT_DIR}/libgcc_s.so.1" "${ROOTFS_DIR}/lib/libgcc_s.so.1"
+  docker run --rm --platform linux/amd64 -v "${ROOTFS_DIR}:/rootfs" alpine:3.23 \
+    chroot /rootfs /usr/local/bin/oil --version
+fi
 
 if [ "${GRAPHICAL}" = "1" ]; then
   cat > "${ROOTFS_DIR}/etc/dinit.d/alpenglowed" << 'ALPENGLOW'
@@ -660,25 +716,6 @@ type = process
 command = /usr/bin/alpenglowed-run.sh
 restart = yes
 ALPENGLOW
-fi
-
-# Oil (native package manager)
-if [ "${FAST}" != "1" ]; then
-  echo "→ Building Oil (native package manager)..."
-  docker run --rm --platform linux/amd64 -v "${ROOT_DIR}:/workspace" -v "${OUT_DIR}:/out" alpine:3.23 sh -c '
-    set -e
-    apk add --no-cache rust cargo make gcc musl-dev >/dev/null
-    cd /workspace
-    CARGO_TARGET_DIR=/out/oil-target cargo build -p oil --release --no-default-features --features wax
-    cp /out/oil-target/release/oil /out/oil
-    cp -L /usr/lib/libgcc_s.so.1 /out/libgcc_s.so.1
-  ' 2>&1
-  cp "${OUT_DIR}/oil" "${ROOTFS_DIR}/usr/local/bin/oil"
-  cp "${OUT_DIR}/libgcc_s.so.1" "${ROOTFS_DIR}/lib/libgcc_s.so.1"
-  chmod 755 "${ROOTFS_DIR}/usr/local/bin/oil"
-  docker run --rm --platform linux/amd64 -v "${ROOTFS_DIR}:/rootfs" alpine:3.23 \
-    chroot /rootfs /usr/local/bin/oil --version
-  echo "  oil: ${ROOTFS_DIR}/usr/local/bin/oil"
 fi
 
 # Normalize the generated Toybox shell scripts to the shell shipped as /bin/sh.

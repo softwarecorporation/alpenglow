@@ -141,9 +141,9 @@ ln -s /bin/toybox "${native}/bin/true"
   . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
   assemble_rootfs_config >/dev/null
 )
-assert_contains "${native}/etc/dinit.d/boot" '^depends-on = state-mount$'
-assert_contains "${native}/etc/dinit.d/boot" '^depends-on = shell-ttyS0$'
-assert_not_contains "${native}/etc/dinit.d/boot" '^depends-on = (alpenglow-kernel-policy|alpenglow-netd|alpenglow-zram|alpenglow-pressure|alpenglow-power|networking|earlyoom|dropbear|chronyd|syslogd|crond|dnsmasq)$'
+assert_contains "${native}/etc/dinit.d/boot" '^waits-for = state-mount$'
+assert_contains "${native}/etc/dinit.d/boot" '^waits-for = shell-ttyS0$'
+assert_not_contains "${native}/etc/dinit.d/boot" '^(depends-on|waits-for) = (alpenglow-kernel-policy|alpenglow-netd|alpenglow-zram|alpenglow-pressure|alpenglow-power|networking|earlyoom|dropbear|chronyd|syslogd|crond|dnsmasq)$'
 [ ! -e "${native}/etc/dinit.d/boot.d/alpenglow-kernel-policy" ] || fail 'unavailable service remains enabled'
 (
   ROOTFS_DIR="${native}"
@@ -172,14 +172,14 @@ done
   assemble_rootfs_config >/dev/null
 )
 for service in state-mount alpenglow-kernel-policy alpenglow-netd alpenglow-zram alpenglow-pressure networking syslogd crond; do
-  assert_contains "${native_full}/etc/dinit.d/boot" "^depends-on = ${service}$"
+  assert_contains "${native_full}/etc/dinit.d/boot" "^waits-for = ${service}$"
 done
 assert_contains "${native_full}/etc/dinit.d/networking" '/usr/share/udhcpc/default.script'
 (
   ROOTFS_DIR="${native_full}"
   toybox_has() { return 0; }
   . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
-  sed -i '/^depends-on = alpenglow-kernel-policy$/d' "${native_full}/etc/dinit.d/boot"
+  sed -i '/^waits-for = alpenglow-kernel-policy$/d' "${native_full}/etc/dinit.d/boot"
   rm "${native_full}/usr/local/bin/alpenglow-kernelctl"
   if _assemble_native_validate_services 2>/dev/null; then
     fail 'validation accepted a missing transitive dependency command'

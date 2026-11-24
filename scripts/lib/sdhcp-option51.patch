@@ -1,0 +1,32 @@
+Backport the fixed-width lease-time types from inspected upstream commit
+90b18e7b1cfcf7ab0799b917d7c4d1318ed29f57 (Fix sent lease time on 64-bit systems):
+https://git.2f30.org/sdhcp/commit/90b18e7b1cfcf7ab0799b917d7c4d1318ed29f57.html
+Keep the checksum-pinned 0.1 archive; option 51 is four bytes on send and receive.
+
+Local renewal fix: arm the lease alarm after daemonizing. The 0.1 child
+otherwise loses the pre-fork alarm and never sends its renewal REQUEST.
+
+--- a/sdhcp.c
++++ b/sdhcp.c
+@@ -7,6 +7,7 @@
+ #include <poll.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -96 +97 @@
+-static unsigned long t1;
++static uint32_t t1;
+@@ -104 +105 @@
+-hnput(unsigned char *dst, unsigned long long src, size_t n)
++hnput(unsigned char *dst, uint32_t src, size_t n)
+@@ -245 +246 @@
+-hnoptput(unsigned char *p, int opt, long long data, size_t len)
++hnoptput(unsigned char *p, int opt, uint32_t data, size_t len)
+@@ -336 +336,0 @@
+-	alarm(t1);
+@@ -394,0 +395,2 @@
++	/* fork clears the child's alarm; start the lease timer in the child. */
++	alarm(t1);

@@ -70,6 +70,9 @@ sha256_file() {
 
 require_cmd zstd
 
+# Oil ships in every edition but fast. The image builder builds its own musl
+# payload with wax enabled; the installer is built independently below.
+
 if [ "${ARCH}" = "aarch64" ] && [ "${BUILD_PROFILE}" = "desktop" ]; then
   cargo build --release --target "${RUST_TARGET}" --manifest-path "${ROOT_DIR}/system/installer/Cargo.toml" \
     --target-dir "${ROOT_DIR}/target" --bin alpenglow-install

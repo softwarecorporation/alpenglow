@@ -49,18 +49,13 @@ wsl -d Alpenglow
 
 Standard live ISOs use the terminal installer:
 
-> [!WARNING]
-> Installing overwrites the target disk. The installer does not snapshot the source image. Keep the source unchanged until installation finishes. A same-size change during installation can produce a corrupt image without an error.
-
 ```sh
 alpenglow-install --tui /run/alpenglow/alpenglow.img.zst /dev/sdX
 ```
 
-Desktop live ISOs are intended to boot Alpenglowed and open the graphical installer against the bundled image at `/run/alpenglow/alpenglow.img.zst`. The v0.1.721 desktop sessions did not reach a verified usable desktop in the QEMU tests documented in the [boot audit](docs/release-v0.1.721-boot-audit.md).
+Desktop live ISOs boot Alpenglowed and open the graphical installer against the same bundled image at `/run/alpenglow/alpenglow.img.zst`.
 
-Aarch64 desktop assets use a GPT disk with a FAT32 EFI System Partition and a bcachefs state partition. They target generic ARM64 UEFI firmware, including UTM; the v0.1.721 desktop was not verified usable there. Non-UEFI boards need their own firmware, device tree, and boot chain before using the same disk image.
-
-For the v0.1.721 aarch64 desktop live ISO, the tested minimum for reaching root-ready was 1,288 MiB RAM in QEMU 7.2.22 with ARM UEFI and Cortex-A72 (three successful runs). At 1,287 MiB, all three runs reported `Initramfs unpacking failed: write error`, followed by `Kernel panic - not syncing: Requested init /init failed (error -26)`. This is a minimum for that tested virtual machine, not for physical hardware, and does not verify a working graphical desktop.
+Aarch64 desktop assets use a GPT disk with a FAT32 EFI System Partition and a bcachefs state partition. They boot on generic ARM64 UEFI firmware, including UTM. Non-UEFI boards need their own firmware, device tree, and boot chain before using the same disk image.
 
 ## Quick Start
 
@@ -79,12 +74,12 @@ KERNEL_BUILD=1 ./scripts/boot-native.sh
 | Init | dinit | Parallel dependency graph, both modes |
 | Userland | toybox (838KB), oksh | Static musl. Desktop Alpenglowed currently uses an isolated glibc graphics path |
 | Package mgr | Oil | APK-compatible, standalone binary |
-| Kernel | Tracks kernel.org latest stable + Rust modules | CONFIG_RUST=y, alpenglow_core.ko |
+| Kernel | Tracks kernel.org latest stable, CONFIG_RUST=y | Appliance kernels have CONFIG_MODULES off, so the out-of-tree `alpenglow_core.ko` (system/kernel-modules) is a separate artifact that they cannot load |
 | Kernel ctrl | kernelctl (Zig, 89KB) | Static, µs-scale startup |
 | Network | netd (Zig), udhcpc, iwd | Zero-external-deps netd |
 | Root FS | erofs/squashfs immutable image loaded into RAM. bcachefs for `/home` and mutable state |
 | Desktop | Wayland + Smithay target via [Alpenglowed](https://github.com/softwarecorporation/alpenglowed) | Default graphical session. [Soliloquy](https://github.com/softwarecorporation/soliloquy) `sold` is an optional session for the internet role |
-| Security | AppArmor, read-only root (optional) | Hardened by default |
+| Security | Landlock, no loadable kernel modules, immutable RAM root, locked root, key-only SSH | AppArmor and module signing are not shipped: kernels are built without module support, and AppArmor would need a parser and profiles the image does not carry |
 | Audio | ALSA + PipeWire |
 | Kernel | kernel.org latest stable with CONFIG_RUST=y |
 
@@ -178,6 +173,10 @@ Alpenglow has one root model:
 
 **Immutable rootfs** — boot from initramfs, load the OS into RAM, and keep state on a persistent bcachefs partition. `/home`, browser profiles, package state, logs, and caches bind from `/state`; the system image stays immutable. Target: potato, desktop, and internet builds; `fast` boots diskless with no optional `/state` features.
 
+**Packages** — `oil install` puts packages under `/opt/oil`, which images bind from `/state/oil`, so installs (and Oil's database) survive reboots and are covered by `/state` snapshots. `oil system sync` reinstalls any recorded package whose files are missing. Packages are verified against Alpine's signing keys; `OIL_INSECURE_NO_VERIFY=1` is only for unsigned local packages.
+
+**First boot** — root ships locked. The first console login sets its password, kept on `/state`. SSH (dropbear) is key-only. On potato and internet, add keys to `/root/.ssh/authorized_keys`; it and the host keys live on `/state` once it is mounted; the desktop image refuses root over SSH and reads `~/.ssh` instead.
+
 **Desktop** — `BUILD_PROFILE=desktop` adds the graphical stack and [Alpenglowed](https://github.com/softwarecorporation/alpenglowed) desktop environment on top of the immutable rootfs model. It is separate from `standard`; it is not a normal root-on-disk mode. Alpenglowed is a Wayland client on Cage. Smithay `--compositor` is experimental and is not built into the image.
 
 ## Services
@@ -187,7 +186,7 @@ Alpenglow has one root model:
 | SSH (dropbear) | ✅ | ✅ | ✅ | dinit |
 | NTP (chronyd) | ✅ | ✅ | ✅ | dinit |
 | DNS cache (dnsmasq) | ✅ | ✅ | ✅ | dinit |
-| Logging (syslogd) | ✅ | ✅ | ✅ | dinit |
+| Logging (syslogd) | partial | not in x86 images yet | ✅ | dinit |
 | DHCP networking | ✅ | ✅ | ✅ | dinit |
 | WiFi (iwd) | ✅ | optional | ✅ | dinit |
 | Wayland + Alpenglowed | ✅ | optional | ✅ | dinit |

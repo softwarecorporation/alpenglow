@@ -1,0 +1,193 @@
+#!/bin/sh
+# Compose each x86 edition's rootfs with the release assembler (the code
+# boot-native.sh runs), using stub service binaries, and check it against
+# editions.toml with check-release-rootfs.sh. No Docker, kernel or network.
+set -eu
+
+REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT INT TERM
+fail() { printf 'test-release-rootfs: %s\n' "$1" >&2; exit 1; }
+
+stub() { mkdir -p "$(dirname "$1")"; printf '#!/bin/sh\n' > "$1"; chmod 755 "$1"; }
+
+# compose <edition> <out-dir>: rootfs at <out-dir>/rootfs, as boot-native.sh
+# leaves it just before assemble_rootfs_config.
+compose() (
+  unset FAST GRAPHICAL BUILD_SERVICES WORLD_FILE KERNEL_POLICY ZIG_INIT SESSION
+  ROOT_DIR="${REPO_ROOT}"
+  ALPENGLOW_EDITION="$1"
+  OUT_DIR="$2"
+  export ALPENGLOW_EDITION
+  set --  # edition-resolve.sh reads and resets the positional parameters
+  . "${REPO_ROOT}/scripts/edition-resolve.sh"
+  ROOTFS_DIR="${OUT_DIR}/rootfs"
+  BACKEND_DIR="${REPO_ROOT}/system/backends/appliance"
+  ALPENGLOW_MODULE="${OUT_DIR}/none.ko"
+  [ "${ZIG_INIT:-0}" != "1" ] || stub "${OUT_DIR}/alpenglow-init"
+  mkdir -p "${ROOTFS_DIR}/bin" "${ROOTFS_DIR}/sbin" "${ROOTFS_DIR}/etc/alpenglow" "${ROOTFS_DIR}/dev"
+  stub "${ROOTFS_DIR}/bin/toybox"
+  stub "${ROOTFS_DIR}/bin/busybox"
+  ln -s toybox "${ROOTFS_DIR}/bin/true"
+  ln -s busybox "${ROOTFS_DIR}/bin/sh"
+  stub "${ROOTFS_DIR}/sbin/dinit"
+  if [ "${FAST}" != "1" ]; then
+    stub "${ROOTFS_DIR}/usr/local/bin/alpenglow-kernelctl"
+    stub "${ROOTFS_DIR}/usr/local/bin/alpenglow-zramctl-zig"
+  fi
+  [ "${KERNEL_POLICY}" = "none" ] ||
+    cp "${BACKEND_DIR}/kernel-policy-${KERNEL_POLICY}.json" "${ROOTFS_DIR}/etc/alpenglow/kernel-policy.json"
+  toybox_has() { case "$1" in mount|getty|true|sh|ifconfig|route) return 0 ;; *) return 1 ;; esac; }
+  . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
+  assemble_rootfs_config >/dev/null
+)
+
+check() (
+  ROOT_DIR="${REPO_ROOT}"
+  ALPENGLOW_EDITION="$1"
+  export ALPENGLOW_EDITION
+  unset ALPENGLOW_SKU
+  sh "${REPO_ROOT}/scripts/check-release-rootfs.sh" "$2/rootfs"
+)
+
+payloads() {
+  stub "$1/dropbear/usr/sbin/dropbear"
+  stub "$1/chrony/usr/sbin/chronyd"
+  stub "$1/dnsmasq/usr/sbin/dnsmasq"
+  stub "$1/sdhcp/usr/sbin/sdhcp"
+  stub "$1/oil"
+}
+
+if [ "${1:-}" = compose-only ]; then compose "$2" "$3"; exit; fi
+
+for edition in potato internet desktop fast; do
+  out="${tmp}/${edition}"
+  payloads "${out}"
+  compose "${edition}" "${out}"
+  check "${edition}" "${out}" >/dev/null || fail "${edition}: release rootfs rejected"
+done
+
+for edition in potato internet desktop fast; do
+  out="${tmp}/release-${edition}"
+  payloads "${out}"
+  require_state=1
+  [ "${edition}" != fast ] || require_state=0
+  ALPENGLOW_REQUIRE_STATE="${require_state}" compose "${edition}" "${out}"
+  check "${edition}" "${out}" >/dev/null || fail "${edition}: state-aware release rootfs rejected"
+done
+grep -qx 'depends-on = state-mount' "${tmp}/release-potato/rootfs/etc/dinit.d/boot" ||
+  fail "potato release: persistent state must remain required"
+
+# The generated boot service does not import boot.d: a leftover link is inert.
+out="${tmp}/inactive-service"
+payloads "${out}"
+compose potato "${out}"
+sed '/^waits-for = dropbear$/d; /^depends-on = dropbear$/d' "${out}/rootfs/etc/dinit.d/boot" > "${tmp}/boot"
+mv "${tmp}/boot" "${out}/rootfs/etc/dinit.d/boot"
+mkdir -p "${out}/rootfs/etc/dinit.d/boot.d"
+ln -sf ../dropbear "${out}/rootfs/etc/dinit.d/boot.d/dropbear"
+if check potato "${out}" 2>"${tmp}/err"; then fail "unused boot.d link accepted"; fi
+grep -q 'dropbear is not started at boot' "${tmp}/err" || fail "unused boot.d link: wrong error"
+
+# Lean editions: the units the checker accepted actually run the services.
+lean="${tmp}/potato/rootfs/etc/dinit.d"
+grep -q 'dropbear -F -R -s' "${lean}/dropbear" || fail "potato: dropbear unit"
+grep -q 'waits-for = networking' "${lean}/chronyd" || fail "potato: chronyd must not block offline boot"
+for svc in dropbear dnsmasq; do
+  grep -qx 'waits-for = networking' "${lean}/${svc}" || fail "${svc}: missing DHCP ordering edge"
+done
+grep -q '/usr/sbin/sdhcp -d eth0 &' "${lean}/networking" || fail "potato: networking unit"
+grep -q 'mount-state.sh' "${lean}/state-mount" || fail "potato: state-mount unit"
+grep -qx 'nameserver 127.0.0.1' "${tmp}/potato/rootfs/etc/resolv.conf" || fail "potato: resolver"
+grep -q '^chrony:' "${tmp}/potato/rootfs/etc/passwd" || fail "potato: chrony user"
+[ -x "${tmp}/potato/rootfs/usr/local/bin/oil" ] || fail "potato: oil"
+[ -L "${tmp}/potato/rootfs/lib/ld-musl-x86_64.so.1" ] || fail "potato: musl loader link for /opt/oil"
+grep -qx '/opt/oil/lib' "${tmp}/potato/rootfs/etc/ld-musl-x86_64.path" || fail "potato: /opt/oil library path"
+for edition in potato fast desktop; do
+  grep -q '^root:!:' "${tmp}/${edition}/rootfs/etc/shadow" || fail "${edition}: root must ship locked"
+  grep -q 'getty -L -l /usr/local/bin/alpenglow-login' "${tmp}/${edition}/rootfs/etc/dinit.d/shell-ttyS0" ||
+    fail "${edition}: console login must set the first root password"
+done
+# configure-rootfs.sh service users survive the serial-login passwd step.
+grep -q '^dnsmasq:' "${tmp}/desktop/rootfs/etc/passwd" || fail "desktop: service users dropped"
+grep -q -- '-f /etc/chrony/chrony.conf' "${tmp}/desktop/rootfs/etc/dinit.d/chronyd" ||
+  fail "desktop: chronyd must use the configured path"
+# The console waits for /state so the first password can be kept there.
+grep -qx 'waits-for = state-mount' "${lean}/shell-ttyS0" || fail "potato: console must wait for state-mount"
+grep -qx 'waits-for = state-mount' "${tmp}/desktop/rootfs/etc/dinit.d/shell-ttyS0" ||
+  fail "desktop: console must wait for optional state-mount"
+# A missing validation input is not an empty package list.
+for world in missing-world unreadable-world directory-world; do
+  fixture="${tmp}/world-input/system/backends/appliance"
+  mkdir -p "${fixture}"
+  case "${world}" in
+    unreadable-world)
+      : > "${fixture}/${world}"
+      chmod 000 "${fixture}/${world}"
+      # Root can still read mode-000 files; that is not an unreadable input.
+      [ ! -r "${fixture}/${world}" ] || continue
+      ;;
+    directory-world) mkdir "${fixture}/${world}" ;;
+  esac
+  if ROOT_DIR="${tmp}/world-input" FAST=0 WORLD_FILE="${world}" \
+    ALPENGLOW_SKU=potato KERNEL_POLICY=none \
+    sh "${REPO_ROOT}/scripts/check-release-rootfs.sh" "${tmp}/potato/rootfs" 2>"${tmp}/err"; then
+    fail "${world}: invalid world input accepted"
+  fi
+  grep -q 'world file is not a readable regular file' "${tmp}/err" || fail "${world}: wrong error"
+done
+
+# A failed rebuild must not supply an older, unpatched DHCP client.
+sed -n '/^if world_has sdhcp; then$/,/^# Graphical builds:/p' "${REPO_ROOT}/scripts/boot-native.sh" |
+  sed '$d' > "${tmp}/build-sdhcp.sh"
+[ -s "${tmp}/build-sdhcp.sh" ] || fail "DHCP build fixture is empty"
+(
+  OUT_DIR="${tmp}/failed-dhcp"
+  ROOT_DIR="${REPO_ROOT}"
+  stub "${OUT_DIR}/sdhcp/usr/sbin/sdhcp"
+  world_has() { return 0; }
+  docker() { return 71; }
+  . "${tmp}/build-sdhcp.sh"
+  [ ! -e "${OUT_DIR}/sdhcp/usr/sbin/sdhcp" ] || fail "failed DHCP rebuild kept stale client"
+) 2>"${tmp}/err"
+
+# A failed DHCP build must not leave dangling service-description edges.
+out="${tmp}/no-dhcp"
+payloads "${out}"
+rm -rf "${out}/sdhcp"
+sh "$0" compose-only potato "${out}" || fail "potato without DHCP: assembler failed"
+for svc in dropbear chronyd dnsmasq; do
+  ! grep -q 'waits-for = networking' "${out}/rootfs/etc/dinit.d/${svc}" ||
+    fail "${svc}: references missing networking description"
+done
+# Even optional waits-for targets must have descriptions for dinit to load.
+if (
+  ROOTFS_DIR="${out}/rootfs"
+  toybox_has() { return 0; }
+  . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
+  printf 'waits-for = missing-description\n' >> "${ROOTFS_DIR}/etc/dinit.d/dropbear"
+  _assemble_native_validate_services
+) 2>"${tmp}/err"; then fail "missing waits-for description accepted"; fi
+grep -q 'native boot service is not runnable: dropbear' "${tmp}/err" || fail "missing waits-for: wrong error"
+# Missing optional payloads are a dev-boot condition, not an assembler failure.
+# Run in its own shell: inside `||` the shell would ignore set -e.
+sh "$0" compose-only potato "${tmp}/bare" ||
+  fail "potato without payloads: assembler failed"
+# fast stays zero-overhead.
+! grep -q 'state-mount' "${tmp}/fast/rootfs/etc/dinit.d/shell-ttyS0" || fail "fast: console waits for state-mount"
+[ ! -e "${tmp}/fast/rootfs/etc/dinit.d/boot.d/dropbear" ] || fail "fast: dropbear started"
+[ ! -e "${tmp}/fast/rootfs/usr/local/bin/oil" ] || fail "fast: oil shipped"
+
+# The checker catches what used to ship silently: a world service that was
+# never built, and an empty root password.
+out="${tmp}/broken"
+payloads "${out}"
+rm -rf "${out}/dropbear"
+compose potato "${out}"
+if check potato "${out}" 2>"${tmp}/err"; then fail "missing dropbear accepted"; fi
+grep -q 'lists dropbear but dropbear is not in the image' "${tmp}/err" || fail "missing dropbear: wrong error"
+sed 's/^root:!:/root::/' "${out}/rootfs/etc/shadow" > "${tmp}/shadow" && mv "${tmp}/shadow" "${out}/rootfs/etc/shadow"
+if check potato "${out}" 2>"${tmp}/err"; then fail "empty root password accepted"; fi
+grep -q 'empty password in /etc/shadow for: root' "${tmp}/err" || fail "empty password: wrong error"
+
+printf 'test-release-rootfs: ok\n'

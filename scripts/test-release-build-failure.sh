@@ -7,6 +7,10 @@ trap 'rm -rf "${tmp}"' EXIT
 mkdir -p "${tmp}/scripts/lib" "${tmp}/build/native" "${tmp}/bin"
 cp "${root}/scripts/build-release.sh" "${tmp}/scripts/"
 cp "${root}/scripts/lib/initramfs-codec-identity.sh" "${tmp}/scripts/lib/"
+cp "${root}/scripts/edition-resolve.sh" "${tmp}/scripts/"
+cp "${root}/editions.toml" "${tmp}/"
+# Rootfs rejection is exercised with the real checker in test-build-release-failfast.sh.
+printf '#!/bin/sh\nexit 0\n' > "${tmp}/scripts/check-release-rootfs.sh"
 printf 'old kernel\n' > "${tmp}/build/native/vmlinuz"
 printf '\037\213old archive' > "${tmp}/build/native/initramfs.cpio.gz"
 printf '\050\265\057\375old' > "${tmp}/build/native/initramfs.cpio.zst"

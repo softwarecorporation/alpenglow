@@ -135,10 +135,23 @@ find_image() {
   echo ""
 }
 
+# GPT names are available before udev, including for encrypted state.
+partname_dev() {
+  for uevent in "${SYSFS_BLOCK:-/sys/class/block}"/*/uevent; do
+    [ -r "${uevent}" ] || continue
+    if grep -Fxq "PARTNAME=$1" "${uevent}"; then
+      dev="$(sed -n 's/^DEVNAME=//p' "${uevent}")"
+      [ -n "${dev}" ] && { echo "/dev/${dev}"; return 0; }
+    fi
+  done
+  return 1
+}
+
 state_block_dev() {
   spec="$1"
   case "${spec}" in
     LABEL=*) blkid -L "${spec#LABEL=}" 2>/dev/null || true ;;
+    PARTLABEL=*) partname_dev "${spec#PARTLABEL=}" || true ;;
     /dev/*) echo "${spec}" ;;
     *) echo "${spec}" ;;
   esac
