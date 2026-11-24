@@ -417,13 +417,17 @@ fi
 if world_has sdhcp; then
   # sdhcp — DHCP client for images without udhcpc (static musl). Full log kept;
   # dev boots go on without it, release images fail check-release-rootfs.sh.
-  if ! docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" alpine:3.21 sh -c '
-    apk add --no-cache gcc musl-dev make curl tar >/dev/null 2>&1
+  rm -f "${OUT_DIR}/sdhcp/usr/sbin/sdhcp"
+  if ! docker run --rm --platform linux/amd64 -v "${OUT_DIR}:/out" \
+    -v "${ROOT_DIR}/scripts/lib/sdhcp-option51.patch:/sdhcp-option51.patch:ro" alpine:3.21 sh -c '
+    set -e
+    apk add --no-cache gcc musl-dev make curl tar patch >/dev/null 2>&1
     cd /tmp
     curl -fsSL https://dl.2f30.org/releases/sdhcp-0.1.tar.gz -o sdhcp.tar.gz || exit 1
     echo "08e43f3d540f62ba9b4a72774fee39074d81f272955c84dd283d8fbaef44deed  sdhcp.tar.gz" | sha256sum -c - || exit 1
     tar -xzf sdhcp.tar.gz
     cd sdhcp-0.1
+    patch -p1 < /sdhcp-option51.patch || exit 1
     make CC=gcc CFLAGS="-Os -D_BSD_SOURCE" LDFLAGS="-static -s" >/dev/null
     mkdir -p /out/sdhcp/usr/sbin
     cp sdhcp /out/sdhcp/usr/sbin/sdhcp

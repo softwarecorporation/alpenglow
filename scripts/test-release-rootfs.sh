@@ -70,6 +70,9 @@ done
 lean="${tmp}/potato/rootfs/etc/dinit.d"
 grep -q 'dropbear -F -R -s' "${lean}/dropbear" || fail "potato: dropbear unit"
 grep -q 'waits-for = networking' "${lean}/chronyd" || fail "potato: chronyd must not block offline boot"
+for svc in dropbear dnsmasq; do
+  grep -qx 'waits-for = networking' "${lean}/${svc}" || fail "${svc}: missing DHCP ordering edge"
+done
 grep -q '/usr/sbin/sdhcp -d eth0 &' "${lean}/networking" || fail "potato: networking unit"
 grep -q 'mount-state.sh' "${lean}/state-mount" || fail "potato: state-mount unit"
 grep -qx 'nameserver 127.0.0.1' "${tmp}/potato/rootfs/etc/resolv.conf" || fail "potato: resolver"
@@ -86,6 +89,59 @@ done
 grep -q '^dnsmasq:' "${tmp}/desktop/rootfs/etc/passwd" || fail "desktop: service users dropped"
 # The console waits for /state so the first password can be kept there.
 grep -qx 'waits-for = state-mount' "${lean}/shell-ttyS0" || fail "potato: console must wait for state-mount"
+# A missing validation input is not an empty package list.
+for world in missing-world unreadable-world directory-world; do
+  fixture="${tmp}/world-input/system/backends/appliance"
+  mkdir -p "${fixture}"
+  case "${world}" in
+    unreadable-world)
+      : > "${fixture}/${world}"
+      chmod 000 "${fixture}/${world}"
+      # Root can still read mode-000 files; that is not an unreadable input.
+      [ ! -r "${fixture}/${world}" ] || continue
+      ;;
+    directory-world) mkdir "${fixture}/${world}" ;;
+  esac
+  if ROOT_DIR="${tmp}/world-input" FAST=0 WORLD_FILE="${world}" \
+    ALPENGLOW_SKU=potato KERNEL_POLICY=none \
+    sh "${REPO_ROOT}/scripts/check-release-rootfs.sh" "${tmp}/potato/rootfs" 2>"${tmp}/err"; then
+    fail "${world}: invalid world input accepted"
+  fi
+  grep -q 'world file is not a readable regular file' "${tmp}/err" || fail "${world}: wrong error"
+done
+
+# A failed rebuild must not supply an older, unpatched DHCP client.
+sed -n '/^if world_has sdhcp; then$/,/^# Graphical builds:/p' "${REPO_ROOT}/scripts/boot-native.sh" |
+  sed '$d' > "${tmp}/build-sdhcp.sh"
+[ -s "${tmp}/build-sdhcp.sh" ] || fail "DHCP build fixture is empty"
+(
+  OUT_DIR="${tmp}/failed-dhcp"
+  ROOT_DIR="${REPO_ROOT}"
+  stub "${OUT_DIR}/sdhcp/usr/sbin/sdhcp"
+  world_has() { return 0; }
+  docker() { return 71; }
+  . "${tmp}/build-sdhcp.sh"
+  [ ! -e "${OUT_DIR}/sdhcp/usr/sbin/sdhcp" ] || fail "failed DHCP rebuild kept stale client"
+) 2>"${tmp}/err"
+
+# A failed DHCP build must not leave dangling service-description edges.
+out="${tmp}/no-dhcp"
+payloads "${out}"
+rm -rf "${out}/sdhcp"
+sh "$0" compose-only potato "${out}" || fail "potato without DHCP: assembler failed"
+for svc in dropbear chronyd dnsmasq; do
+  ! grep -q 'waits-for = networking' "${out}/rootfs/etc/dinit.d/${svc}" ||
+    fail "${svc}: references missing networking description"
+done
+# Even optional waits-for targets must have descriptions for dinit to load.
+if (
+  ROOTFS_DIR="${out}/rootfs"
+  toybox_has() { return 0; }
+  . "${REPO_ROOT}/scripts/lib/assemble-rootfs.sh"
+  printf 'waits-for = missing-description\n' >> "${ROOTFS_DIR}/etc/dinit.d/dropbear"
+  _assemble_native_validate_services
+) 2>"${tmp}/err"; then fail "missing waits-for description accepted"; fi
+grep -q 'native boot service is not runnable: dropbear' "${tmp}/err" || fail "missing waits-for: wrong error"
 # Missing optional payloads are a dev-boot condition, not an assembler failure.
 # Run in its own shell: inside `||` the shell would ignore set -e.
 sh "$0" compose-only potato "${tmp}/bare" ||

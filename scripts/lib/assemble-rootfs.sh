@@ -362,24 +362,24 @@ type = process
 command = /bin/toybox sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; if grep -q ' /state ' /proc/mounts && ! grep -q ' /etc/dropbear ' /proc/mounts; then mkdir -p /state/etc/dropbear && mkdir -p -m 700 /state/root-ssh && mount --bind /state/etc/dropbear /etc/dropbear && mount --bind /state/root-ssh /root/.ssh; fi; exec /usr/sbin/dropbear -F -R -s"
 restart = yes
 depends-on = state-mount
-waits-for = networking
 UNIT
+    [ ! -f "${d}/networking" ] || echo 'waits-for = networking' >> "${d}/dropbear"
   fi
   if [ -x "${ROOTFS_DIR}/usr/sbin/chronyd" ]; then
     cat > "${d}/chronyd" << 'UNIT'
 type = process
 command = /usr/sbin/chronyd -d -s -u chrony -f /etc/chrony/chrony.conf
 restart = yes
-waits-for = networking
 UNIT
+    [ ! -f "${d}/networking" ] || echo 'waits-for = networking' >> "${d}/chronyd"
   fi
   if [ -x "${ROOTFS_DIR}/usr/sbin/dnsmasq" ]; then
     cat > "${d}/dnsmasq" << 'UNIT'
 type = process
 command = /usr/sbin/dnsmasq -k -u dnsmasq -C /etc/dnsmasq.conf
 restart = yes
-waits-for = networking
 UNIT
+    [ ! -f "${d}/networking" ] || echo 'waits-for = networking' >> "${d}/dnsmasq"
   fi
   _merge_etc_db passwd << 'PASSWD'
 chrony:x:776:776:chrony:/var/empty:/sbin/nologin
@@ -509,6 +509,9 @@ _native_service_runnable() (
       fi
       ;;
   esac
+  for dependency in $(sed -n 's/^[[:space:]]*waits-for[[:space:]]*=[[:space:]]*//p' "${unit}"); do
+    [ -f "${ROOTFS_DIR}/etc/dinit.d/${dependency}" ] || return 1
+  done
   for dependency in $(sed -n 's/^[[:space:]]*depends-on[[:space:]]*=[[:space:]]*//p' "${unit}"); do
     case " ${2:-} " in *" ${dependency} "*) return 1 ;; esac
     _native_service_runnable "${dependency}" "${2:-} ${service}" || return 1

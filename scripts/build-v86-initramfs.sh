@@ -104,8 +104,8 @@ if [ -d "${ROOTFS}/etc" ] && [ ! -w "${ROOTFS}/etc" ]; then
     chown -R "$(id -u):$(id -g)" "${ROOTFS}" 2>/dev/null || true
   fi
 fi
-mkdir -p "${ROOTFS}/.oil/cache/system" "${ROOTFS}/etc"
-cat > "${ROOTFS}/.oil/installed.json" <<EOF
+mkdir -p "${ROOTFS}/.oil/cache/system" "${ROOTFS}/opt/oil/var/lib/oil" "${ROOTFS}/etc"
+cat > "${ROOTFS}/opt/oil/var/lib/oil/installed.json" <<EOF
 {
   "fastfetch": {
     "name": "fastfetch",

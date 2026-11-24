@@ -18,6 +18,15 @@ cp "${REPO_ROOT}/scripts/build-release.sh" "${REPO_ROOT}/scripts/edition-resolve
 cp "${REPO_ROOT}/editions.toml" "${root}/"
 cp "${REPO_ROOT}"/system/backends/appliance/packages-*.txt "${root}/system/backends/appliance/"
 
+# Record checker entry separately from later network/disk operations, while
+# retaining the real checker for the incomplete-rootfs case.
+mv "${root}/scripts/check-release-rootfs.sh" "${root}/scripts/check-release-rootfs-real.sh"
+cat > "${root}/scripts/check-release-rootfs.sh" << EOF
+#!/bin/sh
+echo checker >> "${tmp}/checker-reached"
+exec sh "${root}/scripts/check-release-rootfs-real.sh" "\$@"
+EOF
+
 # Anything past the kernel step touches the network or the disk: record it.
 for tool in curl sudo sgdisk dd; do
   printf '#!/bin/sh\necho %s >> "%s/reached"\nexit 1\n' "${tool}" "${tmp}" > "${tmp}/bin/${tool}"
@@ -39,18 +48,20 @@ EOF
 }
 
 run_release() {
-  rm -f "${tmp}/reached"
+  rm -f "${tmp}/reached" "${tmp}/checker-reached"
   PATH="${tmp}/bin:${PATH}" IMAGE_SIZE_MB=1 ALPENGLOW_EDITION=potato \
     sh "${root}/scripts/build-release.sh" > "${tmp}/out" 2>&1
 }
 
 stub_boot_native 1
 if run_release; then fail "failed kernel build produced a release"; fi
+[ ! -e "${tmp}/checker-reached" ] || fail "rootfs checker reached after a failed kernel build"
 [ ! -e "${tmp}/reached" ] || fail "continued past a failed kernel build: $(cat "${tmp}/reached")"
 grep -q 'boot-native: kernel build failed' "${tmp}/out" || fail "build error output was hidden"
 
 stub_boot_native 0
 if run_release; then fail "rootfs without editions.toml services produced a release"; fi
+[ -e "${tmp}/checker-reached" ] || fail "rootfs checker was not reached after a successful kernel build"
 [ ! -e "${tmp}/reached" ] || fail "continued past the rootfs check: $(cat "${tmp}/reached")"
 grep -q 'check-release-rootfs: potato image does not match editions.toml' "${tmp}/out" ||
   fail "rootfs check did not run"

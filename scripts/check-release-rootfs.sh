@@ -9,6 +9,10 @@ ROOTFS="${1:?rootfs directory}"
 ROOT_DIR="${ROOT_DIR:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
 [ -n "${FAST:-}" ] && [ -n "${WORLD_FILE:-}" ] || . "${ROOT_DIR}/scripts/edition-resolve.sh"
 WORLD="${ROOT_DIR}/system/backends/appliance/${WORLD_FILE}"
+[ -f "${WORLD}" ] && [ -r "${WORLD}" ] || {
+  echo "check-release-rootfs: world file is not a readable regular file: ${WORLD}" >&2
+  exit 1
+}
 problems=""
 problem() { problems="${problems}  - $1
 "; }

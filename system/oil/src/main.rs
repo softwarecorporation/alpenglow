@@ -610,10 +610,14 @@ fn run_install_recipe(recipe_path: PathBuf, dry_run: bool) -> Result<()> {
         return Ok(());
     }
     let dest = util::security::validate_install_dest(&recipe.install_dest())?;
-    let mut state = install::InstallState::at_locked(&install::package_root()?)?;
+    let root = install::package_root()?;
+    let mut state = install::InstallState::at_locked(&root)?;
     util::snapshot::before_transaction("install");
-    install_package(&pkg, &dest)?;
+    let files = install_package(&pkg, &dest)?;
     state.mark_installed(&pkg.name, Some(pkg.version.as_str()));
+    if dest == root {
+        state.set_files(&pkg.name, &root, &files);
+    }
     state.save()?;
     println!(
         "Installed {} {} (recipe: {})",

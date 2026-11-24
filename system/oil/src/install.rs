@@ -91,6 +91,7 @@ impl InstallState {
         serde_json::to_writer_pretty(file.as_file_mut(), &self.packages)?;
         file.as_file().sync_all()?;
         file.persist(&self.path).map_err(|e| e.error)?;
+        std::fs::File::open(parent)?.sync_all()?;
         Ok(())
     }
 
